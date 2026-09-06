@@ -1,0 +1,434 @@
+%%---------------------------------------------------------------------------
+%% Wathiq — Entity Relationship Diagram
+%% Generated from 00_foundation.sql .. 11_grants.sql
+%% Columns are trimmed to PK/FK + a few defining fields for readability.
+%% Full column lists, constraints, enums and triggers live in the SQL files.
+%%---------------------------------------------------------------------------
+erDiagram
+
+%% ===================== REFERENCE (01) =====================
+TENANTS {
+    uuid id PK
+    varchar slug
+    varchar name_en
+    enum status
+}
+CURRENCIES {
+    char code PK
+    smallint exponent
+}
+COUNTRIES {
+    uuid id PK
+    char iso2
+    char iso3
+}
+JURISDICTIONS {
+    uuid id PK
+    uuid country_id FK
+    varchar code
+}
+LOCATIONS {
+    uuid id PK
+    uuid parent_id FK
+    uuid country_id FK
+    enum level
+}
+
+%% ===================== IDENTITY (02) =====================
+USERS {
+    uuid id PK
+    citext email
+    enum status
+}
+USER_PROFILES {
+    uuid user_id PK
+    varchar first_name
+    varchar last_name
+    uuid nationality_id FK
+    uuid location_id FK
+}
+ROLES {
+    uuid id PK
+    varchar code
+}
+PERMISSIONS {
+    uuid id PK
+    varchar code
+}
+ROLE_PERMISSIONS {
+    uuid role_id PK
+    uuid permission_id PK
+}
+TENANT_MEMBERSHIPS {
+    uuid id PK
+    uuid tenant_id FK
+    uuid user_id FK
+    uuid role_id FK
+    enum status
+}
+LAWYER_CREDENTIALS {
+    uuid user_id PK
+    varchar license_number
+    uuid jurisdiction_id FK
+}
+USER_SESSIONS {
+    uuid id PK
+    uuid user_id FK
+    uuid replaced_by_id FK
+}
+ONE_TIME_TOKENS {
+    uuid id PK
+    uuid user_id FK
+    enum purpose
+}
+IDENTITY_DOCUMENTS {
+    uuid id PK
+    uuid tenant_id FK
+    uuid user_id FK
+    uuid issuing_country_id FK
+    enum status
+}
+
+%% ===================== PROPERTY (03) =====================
+PROPERTIES {
+    uuid id PK
+    uuid tenant_id FK
+    uuid owner_id FK
+    uuid broker_id FK
+    uuid location_id FK
+    enum status
+}
+PROPERTY_MEDIA {
+    uuid id PK
+    uuid property_id FK
+    boolean is_cover
+}
+OWNERSHIP_DOCUMENTS {
+    uuid id PK
+    uuid property_id FK
+    uuid uploaded_by FK
+    enum status
+}
+AMENITIES {
+    uuid id PK
+    varchar code
+}
+PROPERTY_AMENITIES {
+    uuid property_id PK
+    uuid amenity_id PK
+}
+FAVORITES {
+    uuid user_id PK
+    uuid property_id PK
+}
+
+%% ===================== REQUESTS (04) =====================
+PROPERTY_REQUESTS {
+    uuid id PK
+    uuid tenant_id FK
+    uuid property_id FK
+    uuid requester_id FK
+    enum status
+}
+
+%% ===================== CONTRACTS (05) =====================
+CONTRACTS {
+    uuid id PK
+    uuid tenant_id FK
+    uuid request_id FK
+    uuid property_id FK
+    uuid owner_id FK
+    uuid beneficiary_id FK
+    uuid lawyer_id FK
+    uuid template_id FK
+    uuid jurisdiction_id FK
+    uuid current_version_id FK
+    enum status
+}
+CONTRACT_VERSIONS {
+    uuid id PK
+    uuid contract_id FK
+    integer version_no
+    char content_hash
+    uuid author_id FK
+    uuid ai_job_id FK
+}
+CONTRACT_CLAUSES {
+    uuid id PK
+    uuid contract_version_id FK
+    enum kind
+}
+CONTRACT_TEMPLATES {
+    uuid id PK
+    uuid tenant_id FK
+    uuid jurisdiction_id FK
+}
+CONTRACT_STATUS_HISTORY {
+    uuid id PK
+    uuid contract_id FK
+    enum to_status
+    uuid actor_id FK
+}
+
+%% ===================== AI & KNOWLEDGE (06) =====================
+KB_VERSIONS {
+    uuid id PK
+    uuid jurisdiction_id FK
+    varchar tag
+    enum status
+}
+KNOWLEDGE_SOURCES {
+    uuid id PK
+    uuid jurisdiction_id FK
+    boolean is_verified
+}
+KNOWLEDGE_DOCUMENTS {
+    uuid id PK
+    uuid source_id FK
+}
+KNOWLEDGE_CHUNKS {
+    uuid id PK
+    uuid kb_version_id FK
+    uuid document_id FK
+    uuid jurisdiction_id FK
+    vector embedding
+}
+AI_JOBS {
+    uuid id PK
+    uuid tenant_id FK
+    uuid contract_id FK
+    uuid requested_by FK
+    uuid kb_version_id FK
+    enum status
+}
+CONTRACT_ANALYSES {
+    uuid id PK
+    uuid contract_id FK
+    uuid contract_version_id FK
+    uuid ai_job_id FK
+    smallint risk_score
+}
+ANALYSIS_FINDINGS {
+    uuid id PK
+    uuid analysis_id FK
+    uuid clause_id FK
+    enum severity
+    enum resolution
+}
+
+%% ===================== SIGNATURES (07) =====================
+SIGNATURE_INVITATIONS {
+    uuid id PK
+    uuid contract_id FK
+    uuid contract_version_id FK
+    uuid signer_id FK
+    enum status
+}
+SIGNATURES {
+    uuid id PK
+    uuid contract_id FK
+    uuid contract_version_id FK
+    uuid invitation_id FK
+    uuid signer_id FK
+    char document_hash
+}
+CONTRACT_SEALS {
+    uuid id PK
+    uuid contract_id FK
+    uuid contract_version_id FK
+    char pdf_sha256
+}
+
+%% ===================== PAYMENTS (08) =====================
+PAYMENTS {
+    uuid id PK
+    uuid tenant_id FK
+    uuid contract_id FK
+    uuid payer_id FK
+    char currency FK
+    enum status
+}
+PAYMENT_EVENTS {
+    uuid id PK
+    uuid payment_id FK
+    enum to_status
+}
+WALLETS {
+    uuid id PK
+    uuid user_id FK
+    char currency FK
+    bigint balance
+}
+WALLET_ENTRIES {
+    uuid id PK
+    uuid wallet_id FK
+    enum direction
+    bigint balance_after
+}
+RECEIPTS {
+    uuid id PK
+    uuid payment_id FK
+    varchar number
+}
+
+%% ===================== EXECUTION (09) =====================
+HANDOVER_CODES {
+    uuid id PK
+    uuid contract_id FK
+    uuid issued_by FK
+    uuid consumed_by FK
+    enum status
+}
+CONTRACT_EXECUTIONS {
+    uuid id PK
+    uuid contract_id FK
+    uuid actor_id FK
+    enum step
+}
+
+%% ===================== PLATFORM (10) =====================
+NOTIFICATION_TYPES {
+    varchar code PK
+    boolean is_mandatory
+}
+NOTIFICATIONS {
+    uuid id PK
+    uuid tenant_id FK
+    uuid user_id FK
+    varchar type_code FK
+    enum status
+}
+NOTIFICATION_PREFERENCES {
+    uuid user_id PK
+    varchar type_code PK
+    enum channel PK
+}
+OUTBOX {
+    bigint id PK
+    uuid tenant_id
+    varchar aggregate_type
+}
+WEBHOOK_DELIVERIES {
+    uuid id PK
+    varchar direction
+    varchar source
+}
+IDEMPOTENCY_KEYS {
+    uuid id PK
+    uuid tenant_id
+    varchar endpoint
+}
+AUDIT_LOGS {
+    bigint id PK
+    uuid tenant_id
+    uuid actor_id
+    varchar action
+}
+
+%% ===================== RELATIONSHIPS =====================
+
+%% Reference
+COUNTRIES ||--o{ JURISDICTIONS : has
+COUNTRIES ||--o{ LOCATIONS : has
+LOCATIONS ||--o{ LOCATIONS : "parent of"
+
+%% Identity
+TENANTS ||--o{ TENANT_MEMBERSHIPS : scopes
+USERS ||--o{ TENANT_MEMBERSHIPS : holds
+ROLES ||--o{ TENANT_MEMBERSHIPS : grants
+ROLES ||--o{ ROLE_PERMISSIONS : has
+PERMISSIONS ||--o{ ROLE_PERMISSIONS : includes
+USERS ||--o| USER_PROFILES : has
+COUNTRIES ||--o{ USER_PROFILES : nationality
+LOCATIONS ||--o{ USER_PROFILES : "lives in"
+USERS ||--o| LAWYER_CREDENTIALS : has
+JURISDICTIONS ||--o{ LAWYER_CREDENTIALS : "licensed in"
+USERS ||--o{ USER_SESSIONS : owns
+USER_SESSIONS ||--o| USER_SESSIONS : "replaced by"
+USERS ||--o{ ONE_TIME_TOKENS : requests
+TENANTS ||--o{ IDENTITY_DOCUMENTS : scopes
+USERS ||--o{ IDENTITY_DOCUMENTS : submits
+COUNTRIES ||--o{ IDENTITY_DOCUMENTS : "issued by"
+
+%% Property
+TENANTS ||--o{ PROPERTIES : scopes
+USERS ||--o{ PROPERTIES : lists
+LOCATIONS ||--o{ PROPERTIES : "located in"
+PROPERTIES ||--o{ PROPERTY_MEDIA : has
+PROPERTIES ||--o{ OWNERSHIP_DOCUMENTS : proves
+USERS ||--o{ OWNERSHIP_DOCUMENTS : uploads
+PROPERTIES ||--o{ PROPERTY_AMENITIES : has
+AMENITIES ||--o{ PROPERTY_AMENITIES : tags
+USERS ||--o{ FAVORITES : saves
+PROPERTIES ||--o{ FAVORITES : "saved as"
+
+%% Requests
+TENANTS ||--o{ PROPERTY_REQUESTS : scopes
+PROPERTIES ||--o{ PROPERTY_REQUESTS : "requested via"
+USERS ||--o{ PROPERTY_REQUESTS : submits
+
+%% Contracts
+TENANTS ||--o{ CONTRACTS : scopes
+PROPERTY_REQUESTS ||--o| CONTRACTS : becomes
+PROPERTIES ||--o{ CONTRACTS : "subject of"
+USERS ||--o{ CONTRACTS : "owner in"
+USERS ||--o{ CONTRACTS : "beneficiary in"
+USERS ||--o{ CONTRACTS : "lawyer for"
+JURISDICTIONS ||--o{ CONTRACTS : governs
+CONTRACT_TEMPLATES ||--o{ CONTRACTS : "based on"
+CONTRACTS ||--o{ CONTRACT_VERSIONS : has
+CONTRACT_VERSIONS ||--o{ CONTRACT_CLAUSES : contains
+CONTRACTS ||--o{ CONTRACT_STATUS_HISTORY : logs
+JURISDICTIONS ||--o{ CONTRACT_TEMPLATES : "template for"
+TENANTS ||--o{ CONTRACT_TEMPLATES : scopes
+
+%% AI & Knowledge
+JURISDICTIONS ||--o{ KB_VERSIONS : "kb for"
+JURISDICTIONS ||--o{ KNOWLEDGE_SOURCES : "source for"
+KNOWLEDGE_SOURCES ||--o{ KNOWLEDGE_DOCUMENTS : has
+KNOWLEDGE_DOCUMENTS ||--o{ KNOWLEDGE_CHUNKS : "chunked into"
+KB_VERSIONS ||--o{ KNOWLEDGE_CHUNKS : versions
+TENANTS ||--o{ AI_JOBS : scopes
+CONTRACTS ||--o{ AI_JOBS : triggers
+KB_VERSIONS ||--o{ AI_JOBS : uses
+AI_JOBS ||--o{ CONTRACT_VERSIONS : produces
+CONTRACTS ||--o{ CONTRACT_ANALYSES : analyzed
+CONTRACT_VERSIONS ||--o| CONTRACT_ANALYSES : analyzes
+AI_JOBS ||--o{ CONTRACT_ANALYSES : "ran by"
+CONTRACT_ANALYSES ||--o{ ANALYSIS_FINDINGS : contains
+CONTRACT_CLAUSES ||--o{ ANALYSIS_FINDINGS : flags
+
+%% Signatures
+CONTRACTS ||--o{ SIGNATURE_INVITATIONS : requests
+CONTRACT_VERSIONS ||--o{ SIGNATURE_INVITATIONS : targets
+USERS ||--o{ SIGNATURE_INVITATIONS : invited
+SIGNATURE_INVITATIONS ||--o| SIGNATURES : "fulfilled by"
+CONTRACTS ||--o{ SIGNATURES : has
+CONTRACT_VERSIONS ||--o{ SIGNATURES : signs
+USERS ||--o{ SIGNATURES : "signs as"
+CONTRACTS ||--o| CONTRACT_SEALS : sealed
+CONTRACT_VERSIONS ||--o| CONTRACT_SEALS : finalizes
+
+%% Payments
+TENANTS ||--o{ PAYMENTS : scopes
+CONTRACTS ||--o{ PAYMENTS : "paid for"
+USERS ||--o{ PAYMENTS : pays
+CURRENCIES ||--o{ PAYMENTS : denominated
+PAYMENTS ||--o{ PAYMENT_EVENTS : logs
+PAYMENTS ||--o| RECEIPTS : issues
+USERS ||--o{ WALLETS : owns
+CURRENCIES ||--o{ WALLETS : denominated
+WALLETS ||--o{ WALLET_ENTRIES : ledger
+
+%% Execution
+CONTRACTS ||--o{ HANDOVER_CODES : issues
+USERS ||--o{ HANDOVER_CODES : "issued by"
+CONTRACTS ||--o{ CONTRACT_EXECUTIONS : logs
+USERS ||--o{ CONTRACT_EXECUTIONS : performs
+
+%% Platform
+NOTIFICATION_TYPES ||--o{ NOTIFICATIONS : typed
+TENANTS ||--o{ NOTIFICATIONS : scopes
+USERS ||--o{ NOTIFICATIONS : receives
+USERS ||--o{ NOTIFICATION_PREFERENCES : sets
+NOTIFICATION_TYPES ||--o{ NOTIFICATION_PREFERENCES : for

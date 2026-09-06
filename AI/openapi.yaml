@@ -1,0 +1,291 @@
+openapi: 3.1.0
+info:
+  title: Wathiq AI Legal Engine
+  version: "0.1.0"
+  description: >
+    Wire contract between the Laravel back-end and the AI Legal Engine (FastAPI).
+    See AI/WATHIQ_AI_SPRINT_PLAN.md's Phase 0 section for the HMAC/API-key scheme this implements.
+
+servers:
+  - url: http://localhost:8001
+    description: local dev
+
+paths:
+  /health:
+    get:
+      summary: Liveness check
+      security: []
+      responses:
+        "200":
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+
+  /v1/jobs:
+    post:
+      summary: Enqueue an AI job (Laravel → AI service)
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JobRequest"
+      responses:
+        "202":
+          description: Job accepted, will run async and call back via webhook
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    enum: [running]
+        "401":
+          description: Missing/invalid API key
+        "422":
+          description: Malformed request
+
+  /v1/jobs/{job_id}/callback:
+    post:
+      summary: >
+        Documents the shape the AI service POSTs to Laravel's inbound webhook
+        endpoint when a job finishes. Not served by the AI service itself —
+        implemented on the Laravel side (plan §1E.4).
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      security:
+        - HmacAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JobCallback"
+      responses:
+        "200":
+          description: Laravel accepted the callback
+        "401":
+          description: Bad or replayed signature
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    HmacAuth:
+      type: apiKey
+      in: header
+      name: X-Wathiq-Signature
+      description: "t=<unix_ts>,v1=<hex hmac-sha256(secret, ts + '.' + raw_body)>"
+
+  schemas:
+    JobRequest:
+      type: object
+      required: [job_id, kind, jurisdiction_id, payload]
+      properties:
+        job_id:
+          type: string
+          format: uuid
+          description: Same id as app.ai_jobs.id — the AI service does not generate this.
+        kind:
+          type: string
+          enum: [generate_contract, analyze_contract, answer_query, summarize]
+        jurisdiction_id:
+          type: string
+          format: uuid
+        payload:
+          oneOf:
+            - $ref: "#/components/schemas/GenerateContractPayload"
+            - $ref: "#/components/schemas/AnalyzeContractPayload"
+
+    GenerateContractPayload:
+      type: object
+      required: [contract_type, parties, property]
+      properties:
+        contract_type:
+          type: string
+          enum: [sale, rent]
+        parties:
+          type: array
+          items:
+            type: object
+        property:
+          type: object
+        language:
+          type: string
+          enum: [ar, en]
+          default: ar
+
+    AnalyzeContractPayload:
+      type: object
+      required: [contract_version_id, content]
+      properties:
+        contract_version_id:
+          type: string
+          format: uuid
+        content:
+          type: string
+          description: Full contract text/body to analyze.
+
+    JobCallback:
+      type: object
+      required: [job_id, kind, status, provenance]
+      properties:
+        job_id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum: [generate_contract, analyze_contract, answer_query, summarize]
+        status:
+          type: string
+          enum: [succeeded, failed, timed_out]
+        result:
+          oneOf:
+            - $ref: "#/components/schemas/GenerateContractResult"
+            - $ref: "#/components/schemas/AnalyzeContractResult"
+        error:
+          type: string
+          nullable: true
+          description: Set when status != succeeded.
+        provenance:
+          $ref: "#/components/schemas/Provenance"
+
+    GenerateContractResult:
+      type: object
+      required: [body, clauses, citations]
+      properties:
+        body:
+          type: string
+        clauses:
+          type: array
+          items:
+            type: object
+            required: [clause_kind, content]
+            properties:
+              clause_kind:
+                type: string
+                enum: [parties, subject, price, payment_terms, duration,
+                       obligations, warranties, termination,
+                       dispute_resolution, governing_law, other]
+              content:
+                type: string
+        citations:
+          type: array
+          items:
+            $ref: "#/components/schemas/Citation"
+        usage:
+          $ref: "#/components/schemas/Usage"
+
+    AnalyzeContractResult:
+      type: object
+      required: [findings, risk_score, summary_ar, summary_en]
+      properties:
+        findings:
+          type: array
+          items:
+            $ref: "#/components/schemas/Finding"
+        risk_score:
+          type: integer
+          minimum: 0
+          maximum: 100
+        summary_ar:
+          type: string
+        summary_en:
+          type: string
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        usage:
+          $ref: "#/components/schemas/Usage"
+
+    Finding:
+      type: object
+      required: [kind, severity, title_ar, title_en, description, citations]
+      properties:
+        kind:
+          type: string
+          enum: [missing_clause, legal_conflict, ambiguity, suggestion, risk]
+        severity:
+          type: string
+          enum: [low, medium, high, critical]
+        title_ar:
+          type: string
+        title_en:
+          type: string
+        description:
+          type: string
+        suggested_text:
+          type: string
+          nullable: true
+        citations:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/Citation"
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+
+    Citation:
+      type: object
+      required: [source_id, article_ref]
+      properties:
+        source_id:
+          type: string
+          format: uuid
+        article_ref:
+          type: string
+        chunk_id:
+          type: string
+          format: uuid
+        excerpt:
+          type: string
+
+    Provenance:
+      type: object
+      required: [provider, model_id, prompt_version, kb_version_id]
+      properties:
+        provider:
+          type: string
+          example: azure-openai
+        model_id:
+          type: string
+          example: gpt-4o
+        model_version:
+          type: string
+        prompt_version:
+          type: string
+        kb_version_id:
+          type: string
+          format: uuid
+
+    Usage:
+      type: object
+      properties:
+        prompt_tokens:
+          type: integer
+        completion_tokens:
+          type: integer
+        latency_ms:
+          type: integer
