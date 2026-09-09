@@ -3,8 +3,16 @@ from abc import ABC, abstractmethod
 
 class LLMProvider(ABC):
     @abstractmethod
-    async def chat(self, system: str, user: str) -> str:
-        """Return the model's text response for a single-turn chat call."""
+    async def chat(
+        self, system: str, user: str, *, json_mode: bool = False, max_tokens: int | None = None
+    ) -> str:
+        """Return the model's text response for a single-turn chat call.
+
+        json_mode requests the provider's structured-JSON output mode (e.g.
+        OpenAI-compatible `response_format={"type": "json_object"}`) where
+        supported — callers must still validate the result, this only
+        improves the odds. The prompt itself must still mention "json" and
+        show the desired shape (DeepSeek requires this)."""
 
 
 class EmbeddingProvider(ABC):

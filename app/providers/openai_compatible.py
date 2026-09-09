@@ -11,14 +11,26 @@ class OpenAICompatibleLLMProvider(LLMProvider):
         self._client = client
         self._model = model
 
-    async def chat(self, system: str, user: str) -> str:
+    async def chat(
+        self, system: str, user: str, *, json_mode: bool = False, max_tokens: int | None = None
+    ) -> str:
+        kwargs: dict = {}
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
         response = await self._client.chat.completions.create(
             model=self._model,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
+            **kwargs,
         )
+        # ponytail: DeepSeek's json_object mode has a known issue where it
+        # occasionally returns empty content instead of raising — callers
+        # that json_mode=True must treat "" as an invalid/retryable result,
+        # not assume a non-exception response is usable.
         return response.choices[0].message.content or ""
 
 

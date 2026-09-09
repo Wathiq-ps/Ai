@@ -6,7 +6,9 @@ from app.providers.base import EmbeddingProvider, LLMProvider, RerankProvider
 class FakeLLMProvider(LLMProvider):
     """Deterministic stand-in for tests — no network call, same input -> same output."""
 
-    async def chat(self, system: str, user: str) -> str:
+    async def chat(
+        self, system: str, user: str, *, json_mode: bool = False, max_tokens: int | None = None
+    ) -> str:
         return f"[fake:{hashlib.sha256((system + user).encode()).hexdigest()[:8]}] {user}"
 
 
