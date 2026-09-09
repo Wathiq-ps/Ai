@@ -6,6 +6,68 @@
 > confirmed by a Palestinian lawyer before it is used as the basis for
 > citations in generated contracts.
 
+## 2026-09-09 update: "Law 49/1953" does not check out
+
+Live corpus-hunting session (hands-on search, not just web reading) against
+MJR and dftp.gov.ps. Two findings that correct the table below:
+
+**"قانون التصرف في الأموال غير المنقولة رقم (49) لسنة 1953" (the West Bank
+citation in the Sale row) could not be verified anywhere.** Checked: MJR's
+consolidated index by title, by full-text, and by category (`أموال غير
+منقولة` + type `قانون` — only 4 laws total in that category, none of them
+this one); MJR by legislation number 49 across all types/categories (3 hits,
+all British Mandate era, none 1953); dftp.gov.ps by number 49 across every
+historical era (3 hits, all Mandate-era, none 1953); dftp.gov.ps by title
+text in the Jordanian era. Zero hits for a 1953 disposal-of-immovable-property
+law, anywhere, under any search. Treat this citation as **unverified,
+likely wrong** — probably came from a secondary source without a real gazette
+number behind it (see Obstacle 5 below, now confirmed as a live problem, not
+just a risk).
+
+**What actually exists and is in force: the Ottoman law, confirmed via the
+gazette authority itself.** `dftp.gov.ps`'s advance search (era filter
+`الإدارة المصرية والأردنية` returned nothing relevant; era filter `الدولة
+العثمانية` + title text `الأموال غير المنقولة` returned six real hits)
+surfaced **`قانون التصرف بالأموال غير المنقولة لسنة 1331 هـ.` (~1913),
+status ساري المفعول (in force)** — downloaded and visually confirmed
+(Article 1 references the Ottoman land registry, `الدفتر الخاقاني`;
+`corpus/immovable-property-disposal-1331h.pdf`, 6pp). This is the same
+Ottoman law the table below had filed under "Gaza only." The West
+Bank/Gaza split for this specific row does not hold up — there is no
+verified separate Jordanian statute for the West Bank side of it. Until a
+lawyer says otherwise, treat the Ottoman law as the operative one for both
+territories on this topic, same as the Majalla row.
+
+**مجلة الأحكام العدلية itself: found via the same tool, better source than
+originally planned.** `dftp.gov.ps` search → `مجلة الأحكام العدلية لسنة
+1293هــ.`, status ساري المفعول, era Ottoman. Downloaded directly
+(`corpus/majalla-1293h.pdf`, 292pp) — no ASP.NET session dance required,
+unlike Muqtafi.
+
+**`dftp.gov.ps` is upgraded from "gap-filler, esp. Gaza" to the primary tool
+for verifying anything pre-1994.** Its advance search has a `الحقبة
+التاريخية` (historical era) filter — Ottoman / British Mandate / Egyptian
+& Jordanian administration / Israeli military rule / PA — plus legislation
+number, type, and status (`ساري المفعول` / `معدل` / `ملغي`). That combination
+is exactly what resolved the 49/1953 dead end; MJR and Muqtafi have nothing
+equivalent. Use it *first* for any pre-1994 law, not as a fallback.
+
+**Both downloaded PDFs are scans, zero text layer** — confirmed with
+`pdftotext` (no output on either) and `pdfinfo` (Mejelle: "Acrobat 4.0 Import
+Plug-in", no OCR text; the Ottoman law: "PaperScan Scanner Software"). This
+was Obstacle 4's risk below; it is now a confirmed, live blocker for these
+two specific documents, not a hypothetical. OCR (QARI-OCR per
+`WATHIQ_AI_SPRINT_PLAN.md`'s Phase-0 decision, or a cheap tesseract check
+first) has to happen before either file can be ingested.
+
+**Operational note on MJR's 403:** a real browser gets through MJR's
+Cloudflare challenge fine — it's a JS challenge, not a UA-string check as
+Obstacle 2 originally assumed. Confirmed both ways: a scripted fetch
+(`curl`/Jina Reader) gets 403 "Enable JavaScript and cookies"; an actual
+browser session loads the site with zero friction, no login. That's a
+reason to browse it by hand or through a real browser tool, not a reason to
+script past it.
+
 ## Headline: the two starting assumptions
 
 | Assumption | Verdict |
@@ -38,7 +100,7 @@ The sharpest single example: the West Bank's Law 49/1953 **expressly repealed**
 
 | Area | West Bank | Gaza |
 |---|---|---|
-| Sale of immovable property | قانون التصرف في الأموال غير المنقولة رقم (49) لسنة 1953 (Jordanian) | قانون التصرف بالأموال غير المنقولة (العثماني) 1331هـ / 1913 |
+| Sale of immovable property | ~~قانون التصرف في الأموال غير المنقولة رقم (49) لسنة 1953 (Jordanian)~~ — **unverified, see 2026-09-09 update**; treat as the same Ottoman law as the Gaza column until a real WB-specific statute turns up | قانون التصرف بالأموال غير المنقولة (العثماني) 1331هـ / 1913 — **confirmed in force, downloaded** |
 | Lease / rent | قانون المالكين والمستأجرين رقم (62) لسنة 1953, as amended (incl. قرار بقانون 35/2022) | قانون إيجار العقارات رقم (5) لسنة 2013 (Gaza-seated PLC) |
 | Ownership / registration | Ottoman Land Code 1858 substrate + Jordanian 40/1952, 6/1964, 51/1958, 41/1953 | Ottoman Land Code 1858 substrate + Mandate 9/1928, Land Transfer Law, Survey Law 1929 |
 | Tax and fees | قانون ضريبة الأبنية والأراضي رقم (11) لسنة 1954; قانون ضريبة الأراضي 30/1955 | قانون ضريبة الأملاك داخل المدن رقم 42 لسنة 1940 (Mandate) |
@@ -57,7 +119,7 @@ the مشروع القانون المدني الفلسطيني has never been ena
 | `maqam.najah.edu` | An-Najah University, Law College | Authoritative-secondary | HTML, **per-article URLs** | Per-law list | **Yes** | **Secondary / schema donor** |
 | `muqtafi.birzeit.edu` | Birzeit Institute of Law | Authoritative-secondary | HTML full text | Partial | Partial | Backup — see obstacles |
 | `pla.gov.ps` / `pla.pna.ps` | Palestinian Land Authority ×2 | Official | **PDF only** | No | Implicit | Authority for *which* laws apply, not for text |
-| `dftp.gov.ps` | ديوان الفتوى والتشريع | Official | Gazette archive | Status facet نافذ/معدل/ملغى | Era facet | Gap-filler, esp. Gaza |
+| `dftp.gov.ps` | ديوان الفتوى والتشريع | Official | Gazette archive, direct PDF links | Status facet ساري/معدل/ملغي | Era facet (Ottoman/Mandate/Jordanian-Egyptian/Israeli/PA) | **Primary for anything pre-1994** — its era+number+status search is the only tool that resolved the 49/1953 dead end (2026-09-09) |
 | `qistas.com` | Commercial | No | **Paywalled**, truncated | — | — | Reject |
 
 Recommended starting document (consolidated, article 1 verbatim available):
@@ -89,8 +151,13 @@ Practical rule for the pipeline:
 1. **Birzeit's Muqtafi is HTTP-only** — every `*.birzeit.edu` host refused TLS
    on 443. Any fetcher that force-upgrades to HTTPS sees the site as dead.
    Newest visible items are 2020–2021, so currency is questionable.
-2. **MJR returns 403 to non-browser user agents.** Needs a realistic UA and
-   respectful rate limiting.
+2. **MJR returns 403 to non-browser user agents.** Confirmed 2026-09-09 to be
+   a real Cloudflare JS challenge ("Enable JavaScript and cookies"), not a
+   simple UA-string check — a scripted fetch gets 403 whether it sends a
+   browser-like UA or not (tried via Jina Reader too, same result). A real
+   browser session gets through with no friction and no login. Conclusion:
+   browse it by hand or through an actual browser tool; do not script a
+   UA-spoofing bypass.
 3. **Post-2007 Gaza legislation is largely absent from the West Bank
    databases.** Gaza's Law 5/2013 returned no hit in Maqam, Muqtafi or MJR;
    only a university faculty page and a journal article carried it. `plc.gov.ps`
@@ -111,6 +178,10 @@ Practical rule for the pipeline:
 
 ## Open questions
 
+- ~~Provenance of "Law 49/1953" (West Bank sale/disposal statute)~~ —
+  **resolved 2026-09-09: it doesn't check out.** See the update at the top of
+  this file. No verified West Bank-specific statute exists for this topic;
+  the Ottoman law appears to be what's actually in force.
 - Gaza's counterparts for **notarisation** and **land-registration fees** —
   not established.
 - Whether the Ottoman Land Code 1858 is formally repealed or merely displaced

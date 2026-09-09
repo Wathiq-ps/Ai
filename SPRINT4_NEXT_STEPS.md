@@ -3,6 +3,58 @@
 Supersedes the 2026-09-07 version, which was stale on three points: the DB
 blocker, whether the schema had ever been touched, and whether the SQL worked.
 
+## 2026-09-09 update: corpus hunt happened, hit an OCR wall
+
+Since this doc was written: `generate_contract` (Sprint 5, the drafting node)
+is built, wired into `/v1/jobs`, and passed a live end-to-end smoke test
+against the real DB/embedder/DeepSeek — see git log, not repeated here. This
+update is scoped to what changed on **this doc's own open items** (2 and 3
+below, plus one item under "Still open, not code").
+
+**Item 3 (document loader) is done** — `app/document_loader.py` reads local
+corpus files and wires `raw_path` through `ingest_document()`. Only
+`.txt`/`.md` supported; PDF/DOCX deferred until real files existed to test
+against. They now do (see next point), and both are scans — so that
+deferral is now blocking, not hypothetical.
+
+**Item 2 (start the corpus) hit a real wall: two of the four target statutes
+don't check out, and everything obtainable so far is a scan.**
+
+- **مجلة الأحكام العدلية** — found and downloaded, `corpus/majalla-1293h.pdf`
+  (292pp), via `dftp.gov.ps` (the gazette authority, not MJR/Muqtafi).
+  Status ساري المفعول.
+- **"Law 49/1953" (sale/disposal) — does not exist under that citation.**
+  Exhaustively checked MJR (title, full-text, category, by-number) and
+  dftp.gov.ps (by-number across every era, by-title in the Jordanian era):
+  zero hits. What's actually in force is the **Ottoman** law `قانون التصرف
+  بالأموال غير المنقولة` (1331هـ) — downloaded,
+  `corpus/immovable-property-disposal-1331h.pdf` (6pp). Full detail and the
+  corrected citation table are in `LAW_CORPUS_RESEARCH.md`'s 2026-09-09
+  update section — read that before touching this statute again.
+- **62/1953 (landlord/tenant) and 11/1954 (buildings/land tax) — located at
+  MJR**, not yet downloaded/OCR'd: `https://mjr.ogb.gov.ps/MergedLegislations/ViewText/119`
+  (62/1953), and search MJR's consolidated index for
+  `قانون ضريبة الأبنية والأراضي ... رقم (11) لسنة 1954` (11/1954).
+- **40/1952 (land & water settlement) — not found yet.** Title-text search on
+  MJR only surfaced fee *regulations* referencing it (`نظام` type, different
+  numbers), not the law itself. Same treatment as 49/1953 was needed but
+  wasn't finished — try `dftp.gov.ps`'s era filter next, not more MJR title
+  guessing.
+- **Both downloaded PDFs are scans, no text layer** (confirmed via
+  `pdftotext`/`pdfinfo` — Mejelle via old Acrobat import, the Ottoman law via
+  PaperScan scanner software). `document_loader.py` can't ingest either as-is.
+  Next call: try a cheap tesseract-Arabic pass before committing to
+  self-hosted QARI-OCR (already flagged as deferred infra work below and in
+  `WATHIQ_AI_SPRINT_PLAN.md`'s Phase 0 section).
+- **MJR's 403 is a real Cloudflare JS challenge, not a UA check** — a real
+  browser passes with zero friction, no login, no bypass needed. Muqtafi
+  remains a dead end for scripted access (session-gated ASP.NET postback
+  form); use it manually or not at all.
+
+This makes item 6 in the Sprint 4 status table below still accurately
+"next" — corpus seeding isn't done, it's now blocked on OCR rather than on
+finding the documents.
+
 ## Decision of record: West Bank law, assumed uniform
 
 We build the corpus from **West Bank** statutes and proceed as if Palestinian
@@ -100,10 +152,15 @@ ran clean, row `id` unchanged.
   embedding endpoint must be chosen before Sprint 7 — and switching models
   means re-embedding, so decide it while the golden set is being built.
 - **No legal review yet.** The statute identification in
-  `LAW_CORPUS_RESEARCH.md` is web-sourced. Worth asking the supervisor the one
-  narrow question: does Law 49/1953 art. 18's repeal of the Ottoman 1913 law
-  extend to Gaza? It either confirms his position with authority behind it or
-  corrects the record cheaply.
+  `LAW_CORPUS_RESEARCH.md` is web-sourced. The original narrow question here
+  ("does Law 49/1953 art. 18's repeal of the Ottoman 1913 law extend to
+  Gaza?") is moot — 2026-09-09 corpus hunting found no verifiable Law
+  49/1953 at all (see that file's update section). Revised question for the
+  supervisor: is the Ottoman `قانون التصرف بالأموال غير المنقولة` (1331هـ)
+  actually the operative sale/disposal statute in the West Bank too, or does
+  a real (differently-numbered or differently-titled) Jordanian statute
+  supersede it there? Answering this cheaply prevents building on the wrong
+  citation.
 - **`vector` resolves only because `public` leads the search_path.** Anything
   that narrows it (a `SECURITY DEFINER` function, a restricted role) breaks
   `vector(1536)` with a confusing "type does not exist".
