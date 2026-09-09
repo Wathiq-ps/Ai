@@ -40,23 +40,33 @@ class SearchResult:
 
 
 async def ingest_document(
-    pool: asyncpg.Pool, *, source_id: uuid.UUID, title: str, raw_text: str, language: str | None = None
+    pool: asyncpg.Pool,
+    *,
+    source_id: uuid.UUID,
+    title: str,
+    raw_text: str,
+    language: str | None = None,
+    raw_path: str | None = None,
 ) -> uuid.UUID:
     """Register one document under an existing `knowledge.sources` row:
-    checksum + ar/en detect, insert into `knowledge.documents`."""
+    checksum + ar/en detect, insert into `knowledge.documents`. `raw_path`
+    is where the source file lives on disk (see app/document_loader.py) --
+    optional because in-memory text (tests, pasted text) has no file behind
+    it."""
     checksum = sha256_checksum(raw_text.encode("utf-8"))
     lang = language or detect_language(raw_text)
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            insert into knowledge.documents (source_id, title, language, checksum)
-            values ($1, $2, $3::app.locale, $4)
+            insert into knowledge.documents (source_id, title, language, checksum, raw_path)
+            values ($1, $2, $3::app.locale, $4, $5)
             returning id
             """,
             source_id,
             title,
             lang,
             checksum,
+            raw_path,
         )
     return row["id"]
 
