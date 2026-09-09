@@ -30,6 +30,7 @@ class SearchResult:
     chunk_id: uuid.UUID
     document_id: uuid.UUID
     source_id: uuid.UUID
+    kb_version_id: uuid.UUID
     content: str
     score: float
     law_type: str
@@ -190,6 +191,7 @@ async def search(
                     c.id as chunk_id,
                     c.document_id,
                     s.id as source_id,
+                    v.id as kb_version_id,
                     c.content,
                     c.law_type::text as law_type,
                     c.metadata ->> 'article' as article,
@@ -223,6 +225,7 @@ async def search(
             chunk_id=row["chunk_id"],
             document_id=row["document_id"],
             source_id=row["source_id"],
+            kb_version_id=row["kb_version_id"],
             content=row["content"],
             score=row["score"],
             law_type=row["law_type"],

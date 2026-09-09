@@ -72,6 +72,7 @@ class GenerateContractResult:
     body: str
     clauses: list[Clause]
     citations: list[Citation]
+    kb_version_id: uuid.UUID
 
 
 async def generate_contract(
@@ -93,6 +94,10 @@ async def generate_contract(
     if not context:
         raise GenerationFailed("no verified law found for this jurisdiction/contract type")
 
+    # search() only ever queries the one `active` kb_version per jurisdiction
+    # (see app/knowledge.py), so every result here shares the same id.
+    kb_version_id = next(iter(context.values())).kb_version_id
+
     system, user = _build_prompt(contract_type, parties, property, language, context)
 
     last_error = ""
@@ -105,7 +110,7 @@ async def generate_contract(
             last_error = str(exc)
             continue
         body = "\n\n".join(c.content for c in clauses)
-        return GenerateContractResult(body=body, clauses=clauses, citations=citations)
+        return GenerateContractResult(body=body, clauses=clauses, citations=citations, kb_version_id=kb_version_id)
 
     raise GenerationFailed(f"LLM never produced valid structured output: {last_error}")
 

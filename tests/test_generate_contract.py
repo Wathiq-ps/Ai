@@ -23,6 +23,7 @@ def _result(label_seed: int) -> SearchResult:
         chunk_id=uuid.uuid4(),
         document_id=uuid.uuid4(),
         source_id=uuid.uuid4(),
+        kb_version_id=uuid.uuid4(),
         content=f"Article text {label_seed}",
         score=0.9,
         law_type="sale",
