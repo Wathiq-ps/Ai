@@ -45,3 +45,23 @@ def test_token_count_is_positive_and_roughly_length_over_four():
     chunks = chunk_document("Article 1\nA reasonably short article body.")
     assert chunks[0].token_count > 0
     assert chunks[0].token_count == max(1, len(chunks[0].content) // 4)
+
+
+def test_bis_articles_keep_their_own_citation_label():
+    """`المادة (4 مكرر)` is a distinct article from `المادة (4)` — MJR's
+    consolidated statutes use both, and collapsing them would cite the wrong one."""
+    text = (
+        "المادة (4)\n"
+        "لا يجوز إخراج مستأجر من العقار إلا في الأحوال التالية.\n\n"
+        "المادة (4 مكرر)\n"
+        "يعتبر إيداع الأجرة إلى صندوق المحكمة إيداعاً قانونياً ووفاءً.\n\n"
+        "المادة (5 مكررة أ)\n"
+        "يحق للمالك أن يطلب زيادة على بدل الإيجار الأساسي."
+    )
+    chunks = chunk_document(text)
+    assert [c.metadata["article"] for c in chunks] == [
+        "المادة (4)",
+        "المادة (4 مكرر)",
+        "المادة (5 مكررة أ)",
+    ]
+    assert "إيداع الأجرة" in chunks[1].content

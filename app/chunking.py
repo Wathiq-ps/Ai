@@ -3,7 +3,12 @@ from dataclasses import dataclass, field
 
 MAX_CHUNK_CHARS = 2000
 
-_ARTICLE_ANCHOR = re.compile(r"^\s*((?:المادة|Article)\s*\(?\d+\)?)\s*[:\-–.]?\s*", re.MULTILINE)
+# Parenthesised form allows a suffix after the number so bis articles keep their
+# real citation — `المادة (4 مكرر)` is a different article from `المادة (4)`, and
+# labelling both "4" would put a wrong article number in a finding's citations[].
+_ARTICLE_ANCHOR = re.compile(
+    r"^\s*((?:المادة|Article)\s*(?:\(\s*\d+[^)\n]{0,24}\)|\d+))\s*[:\-–.]?\s*", re.MULTILINE
+)
 _PARAGRAPH_SPLIT = re.compile(r"\n\s*\n+")
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!؟?])\s+")
 
