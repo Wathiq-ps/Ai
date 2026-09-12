@@ -31,7 +31,12 @@ def get_embedding_provider() -> EmbeddingProvider:
     from app.providers.openai_compatible import OpenAICompatibleEmbeddingProvider
 
     client = AsyncOpenAI(api_key=settings.openrouter_api_key, base_url=settings.openrouter_base_url)
-    return OpenAICompatibleEmbeddingProvider(client, settings.embedding_model, settings.embedding_dimensions)
+    return OpenAICompatibleEmbeddingProvider(
+        client,
+        settings.embedding_model,
+        settings.embedding_dimensions,
+        native_dimensions=settings.embedding_native_dimensions,
+    )
 
 
 def get_rerank_provider() -> RerankProvider:

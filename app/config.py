@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     embedding_model: str = "nvidia/nemotron-3-embed-1b:free"
     embedding_dimensions: int = 1536  # truncated from the model's native 2048
+    # What the endpoint is actually asked for; nemotron-3-embed-1b accepts only
+    # its native 2048, so truncation to embedding_dimensions happens client-side.
+    embedding_native_dimensions: int = 2048
     rerank_model: str = "nvidia/llama-nemotron-rerank-vl-1b-v2:free"
 
     # DeepSeek — LLM, direct platform API (OpenAI-compatible), not OpenRouter.
