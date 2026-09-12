@@ -27,6 +27,20 @@ Built today (all committed, 59 tests green):
   so every request asked for 1536 and got a 400; and `math` was used without
   being imported. Live: 1536-d unit vectors, ar/en cosine 0.546.
 
+- **RAG eval harness (Sprint 5 / 1B′)** — `app/retrieval_eval.py`,
+  `eval/golden_set.jsonl` (15 Arabic question → article pairs from the three
+  West Bank statutes), `scripts/run_eval.py`. Scores by *article label*, not
+  chunk id, so the golden set survives re-chunking; F2 because a missed
+  article costs more than an extra one. Verified offline that every expected
+  label is one the chunker actually produces. The live run waits on the two
+  blockers below.
+- **The rebuild write path is now proven against the real DB** — it had never
+  completed before today (both live attempts died on env/quota before the
+  insert). With deterministic fake vectors: 4 documents → 1714 chunks →
+  count verified → atomic flip to `active`, 14.1s, rows deleted after. Same
+  run confirms BR-24 live: `search()` returns 0 hits while the sources are
+  unverified, even with a full index in place.
+
 ### Blocked, needs you
 
 1. **OpenRouter free tier is out of quota for the day** — 50 requests/day, and
