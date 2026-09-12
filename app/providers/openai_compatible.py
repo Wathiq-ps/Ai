@@ -1,3 +1,4 @@
+import asyncio
 import math
 
 from openai import AsyncOpenAI
@@ -63,19 +64,36 @@ class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
     # Parallelise only if reindex latency becomes a real complaint.
     BATCH_SIZE = 64
 
+    # OpenRouter's free tier allows 20 requests/minute across free models and
+    # answers 429 past that. A full-corpus reindex is ~27 batches, so this is
+    # hit every time: wait out the window rather than failing the rebuild.
+    RATE_LIMIT_WAIT_SECONDS = 20
+    RATE_LIMIT_RETRIES = 6
+
     async def embed(self, texts: list[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
         for start in range(0, len(texts), self.BATCH_SIZE):
-            response = await self._client.embeddings.create(
-                model=self._model,
-                input=texts[start : start + self.BATCH_SIZE],
-                dimensions=self._request_dimensions,
-                encoding_format="float",
-            )
+            response = await self._create_with_retry(texts[start : start + self.BATCH_SIZE])
             # The API may return items out of order; index is authoritative.
             for item in sorted(response.data, key=lambda d: d.index):
                 vectors.append(self._fit(item.embedding))
         return vectors
+
+    async def _create_with_retry(self, batch: list[str]):
+        from openai import RateLimitError
+
+        for attempt in range(self.RATE_LIMIT_RETRIES):
+            try:
+                return await self._client.embeddings.create(
+                    model=self._model,
+                    input=batch,
+                    dimensions=self._request_dimensions,
+                    encoding_format="float",
+                )
+            except RateLimitError:
+                if attempt == self.RATE_LIMIT_RETRIES - 1:
+                    raise
+                await asyncio.sleep(self.RATE_LIMIT_WAIT_SECONDS)
 
     def _fit(self, vector: list[float]) -> list[float]:
         if len(vector) <= self.dimensions:
