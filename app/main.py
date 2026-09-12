@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.db import get_pool
+from app.analyze_contract import RISK_RUBRIC_VERSION, AnalysisFailed, analyze_contract
 from app.generate_contract import GenerationFailed, generate_contract
 from app.logging_conf import configure_logging, new_trace_id, trace_id_var
 from app.providers import get_embedding_provider, get_llm_provider
@@ -45,9 +46,10 @@ class JobRequest(BaseModel):
     payload: dict
 
 
-# ponytail: bump manually when the drafting prompt changes materially — no
-# registry, this string is just what lands in provenance.prompt_version.
+# ponytail: bump manually when a prompt changes materially — no registry,
+# these strings are just what lands in provenance.prompt_version.
 GENERATE_CONTRACT_PROMPT_VERSION = "generate_contract-v1"
+ANALYZE_CONTRACT_PROMPT_VERSION = "analyze_contract-v1"
 
 
 @app.post("/v1/jobs", status_code=202, dependencies=[Depends(require_api_key)])
@@ -55,10 +57,12 @@ async def create_job(job: JobRequest, background_tasks: BackgroundTasks):
     logger.info("received job %s kind=%s", job.job_id, job.kind)
     if job.kind == "generate_contract":
         background_tasks.add_task(_run_generate_contract, job)
+    elif job.kind == "analyze_contract":
+        background_tasks.add_task(_run_analyze_contract, job)
     else:
-        # analyze_contract/answer_query/summarize: not built yet (Sprint 6+).
-        # Laravel gets no callback for these today and the job stays
-        # dispatched — known gap, not this endpoint's job to paper over.
+        # answer_query/summarize: Phase 3, not built. Laravel gets no callback
+        # for these today and the job stays dispatched — known gap, not this
+        # endpoint's job to paper over.
         logger.warning("job %s kind=%s has no worker yet", job.job_id, job.kind)
     return {"job_id": str(job.job_id), "status": "running"}
 
@@ -95,6 +99,7 @@ async def _run_generate_contract(job: JobRequest) -> None:
         await _send_callback(
             job.job_id, "generate_contract", status="failed", error=str(exc),
             provider=provider, model_id=model_id, kb_version_id=None,
+            prompt_version=GENERATE_CONTRACT_PROMPT_VERSION,
         )
         return
 
@@ -105,20 +110,82 @@ async def _run_generate_contract(job: JobRequest) -> None:
         result={
             "body": result.body,
             "clauses": [{"clause_kind": c.clause_kind, "content": c.content} for c in result.clauses],
-            "citations": [
-                {
-                    "source_id": str(c.source_id),
-                    "article_ref": c.article_ref,
-                    "chunk_id": str(c.chunk_id),
-                    "excerpt": c.excerpt,
-                }
-                for c in result.citations
-            ],
+            "citations": [_citation_json(c) for c in result.citations],
         },
         provider=provider,
         model_id=model_id,
         kb_version_id=str(result.kb_version_id),
+        prompt_version=GENERATE_CONTRACT_PROMPT_VERSION,
     )
+
+
+async def _run_analyze_contract(job: JobRequest) -> None:
+    """Same background-task contract as _run_generate_contract: never raises,
+    every path ends in a signed callback or a logged drop."""
+    provider = "deepseek" if settings.deepseek_api_key else "fake"
+    model_id = settings.chat_model if settings.deepseek_api_key else "fake"
+
+    try:
+        payload = job.payload
+        if not payload.get("content"):
+            raise AnalysisFailed("payload missing required field: content")
+        pool = await get_pool()
+        result = await analyze_contract(
+            pool,
+            get_llm_provider(),
+            get_embedding_provider(),
+            jurisdiction_id=job.jurisdiction_id,
+            content=payload["content"],
+            contract_type=payload.get("contract_type"),
+        )
+    except Exception as exc:
+        if not isinstance(exc, AnalysisFailed):
+            logger.exception("job %s (analyze_contract) failed unexpectedly", job.job_id)
+        await _send_callback(
+            job.job_id, "analyze_contract", status="failed", error=str(exc),
+            provider=provider, model_id=model_id, kb_version_id=None,
+            prompt_version=ANALYZE_CONTRACT_PROMPT_VERSION,
+        )
+        return
+
+    await _send_callback(
+        job.job_id,
+        "analyze_contract",
+        status="succeeded",
+        result={
+            "findings": [
+                {
+                    "kind": f.kind,
+                    "severity": f.severity,
+                    "title_ar": f.title_ar,
+                    "title_en": f.title_en,
+                    "description": f.description,
+                    "suggested_text": f.suggested_text,
+                    "citations": [_citation_json(c) for c in f.citations],
+                    "confidence": f.confidence,
+                }
+                for f in result.findings
+            ],
+            "risk_score": result.risk_score,
+            "risk_rubric_version": RISK_RUBRIC_VERSION,
+            "summary_ar": result.summary_ar,
+            "summary_en": result.summary_en,
+            "confidence": result.confidence,
+        },
+        provider=provider,
+        model_id=model_id,
+        kb_version_id=str(result.kb_version_id),
+        prompt_version=ANALYZE_CONTRACT_PROMPT_VERSION,
+    )
+
+
+def _citation_json(c) -> dict:
+    return {
+        "source_id": str(c.source_id),
+        "article_ref": c.article_ref,
+        "chunk_id": str(c.chunk_id),
+        "excerpt": c.excerpt,
+    }
 
 
 async def _send_callback(
@@ -129,6 +196,7 @@ async def _send_callback(
     provider: str,
     model_id: str,
     kb_version_id: str | None,
+    prompt_version: str,
     result: dict | None = None,
     error: str | None = None,
 ) -> None:
@@ -146,7 +214,7 @@ async def _send_callback(
             "provenance": {
                 "provider": provider,
                 "model_id": model_id,
-                "prompt_version": GENERATE_CONTRACT_PROMPT_VERSION,
+                "prompt_version": prompt_version,
                 "kb_version_id": kb_version_id,
             },
         }

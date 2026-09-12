@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 import app.main as main
 from app.config import settings
+from app.analyze_contract import AnalyzeContractResult, Finding
 from app.generate_contract import Citation, Clause, GenerateContractResult
 from app.security import sign_callback
 
@@ -108,11 +109,76 @@ def test_success_path_sends_signed_callback_with_result(monkeypatch):
     assert body["provenance"]["prompt_version"] == main.GENERATE_CONTRACT_PROMPT_VERSION
 
 
-def test_unsupported_job_kind_is_accepted_but_not_dispatched():
+def test_analyze_contract_sends_signed_callback_with_findings_and_score(monkeypatch):
+    kb_version_id, source_id, chunk_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+
+    async def _fake_analyze_contract(*args, **kwargs):
+        return AnalyzeContractResult(
+            findings=[
+                Finding(
+                    kind="missing_clause",
+                    severity="high",
+                    title_ar="بند مفقود",
+                    title_en="Missing clause",
+                    description="No dispute resolution clause.",
+                    suggested_text="Add one.",
+                    citations=[Citation(source_id=source_id, article_ref="Article (1)", chunk_id=chunk_id, excerpt="...")],
+                    confidence=0.8,
+                )
+            ],
+            risk_score=18,
+            summary_ar="ملخص",
+            summary_en="summary",
+            confidence=0.8,
+            kb_version_id=kb_version_id,
+        )
+
+    monkeypatch.setattr(main, "analyze_contract", _fake_analyze_contract)
+    monkeypatch.setattr(main, "get_pool", lambda: _async_none())
+
+    job_id = str(uuid.uuid4())
+    response = client.post(
+        "/v1/jobs",
+        headers={"X-API-Key": "test-key"},
+        json={
+            "job_id": job_id,
+            "kind": "analyze_contract",
+            "jurisdiction_id": str(uuid.uuid4()),
+            "payload": {"contract_version_id": str(uuid.uuid4()), "content": "contract text"},
+        },
+    )
+    assert response.status_code == 202
+
+    [used] = _CapturingClient.instances
+    [call] = used.calls
+    body = _verify_signature(call)
+
+    assert body["status"] == "succeeded"
+    assert body["result"]["risk_score"] == 18
+    assert body["result"]["findings"][0]["citations"][0]["chunk_id"] == str(chunk_id)
+    assert body["provenance"]["prompt_version"] == main.ANALYZE_CONTRACT_PROMPT_VERSION
+
+
+def test_analyze_contract_without_content_fails_closed():
     response = client.post(
         "/v1/jobs",
         headers={"X-API-Key": "test-key"},
         json={"job_id": str(uuid.uuid4()), "kind": "analyze_contract", "jurisdiction_id": str(uuid.uuid4()), "payload": {}},
+    )
+    assert response.status_code == 202
+
+    [used] = _CapturingClient.instances
+    [call] = used.calls
+    body = _verify_signature(call)
+    assert body["status"] == "failed"
+    assert "content" in body["error"]
+
+
+def test_unsupported_job_kind_is_accepted_but_not_dispatched():
+    response = client.post(
+        "/v1/jobs",
+        headers={"X-API-Key": "test-key"},
+        json={"job_id": str(uuid.uuid4()), "kind": "summarize", "jurisdiction_id": str(uuid.uuid4()), "payload": {}},
     )
     assert response.status_code == 202
     assert _CapturingClient.instances == []  # no callback attempted -- no worker for this kind
