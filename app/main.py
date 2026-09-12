@@ -13,6 +13,7 @@ from app.analyze_contract import RISK_RUBRIC_VERSION, AnalysisFailed, analyze_co
 from app.generate_contract import GenerationFailed, generate_contract
 from app.logging_conf import configure_logging, new_trace_id, trace_id_var
 from app.providers import get_embedding_provider, get_llm_provider
+from app.reindex import ReindexFailed, reindex
 from app.security import require_api_key, sign_callback
 
 configure_logging()
@@ -50,6 +51,7 @@ class JobRequest(BaseModel):
 # these strings are just what lands in provenance.prompt_version.
 GENERATE_CONTRACT_PROMPT_VERSION = "generate_contract-v1"
 ANALYZE_CONTRACT_PROMPT_VERSION = "analyze_contract-v1"
+REINDEX_PROMPT_VERSION = "reindex-v1"  # no prompt; provenance wants a version string
 
 
 @app.post("/v1/jobs", status_code=202, dependencies=[Depends(require_api_key)])
@@ -59,6 +61,8 @@ async def create_job(job: JobRequest, background_tasks: BackgroundTasks):
         background_tasks.add_task(_run_generate_contract, job)
     elif job.kind == "analyze_contract":
         background_tasks.add_task(_run_analyze_contract, job)
+    elif job.kind == "reindex":
+        background_tasks.add_task(_run_reindex, job)
     else:
         # answer_query/summarize: Phase 3, not built. Laravel gets no callback
         # for these today and the job stays dispatched — known gap, not this
@@ -176,6 +180,45 @@ async def _run_analyze_contract(job: JobRequest) -> None:
         model_id=model_id,
         kb_version_id=str(result.kb_version_id),
         prompt_version=ANALYZE_CONTRACT_PROMPT_VERSION,
+    )
+
+
+async def _run_reindex(job: JobRequest) -> None:
+    """UC-080. Rebuilds this jurisdiction's kb_version from what is already in
+    knowledge.documents; the payload only carries optional tag/notes — the AI
+    service cannot create or verify sources (see app/reindex.py)."""
+    provider = "openrouter" if settings.openrouter_api_key else "fake"
+    model_id = settings.embedding_model if settings.openrouter_api_key else "fake"
+
+    try:
+        pool = await get_pool()
+        kb_version_id, documents = await reindex(
+            pool,
+            get_embedding_provider(),
+            jurisdiction_id=job.jurisdiction_id,
+            embedding_model=model_id,
+            tag=job.payload.get("tag"),
+            notes=job.payload.get("notes"),
+        )
+    except Exception as exc:
+        if not isinstance(exc, ReindexFailed):
+            logger.exception("job %s (reindex) failed unexpectedly", job.job_id)
+        await _send_callback(
+            job.job_id, "reindex", status="failed", error=str(exc),
+            provider=provider, model_id=model_id, kb_version_id=None,
+            prompt_version=REINDEX_PROMPT_VERSION,
+        )
+        return
+
+    await _send_callback(
+        job.job_id,
+        "reindex",
+        status="succeeded",
+        result={"kb_version_id": str(kb_version_id), "documents": documents},
+        provider=provider,
+        model_id=model_id,
+        kb_version_id=str(kb_version_id),
+        prompt_version=REINDEX_PROMPT_VERSION,
     )
 
 

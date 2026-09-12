@@ -56,14 +56,24 @@ class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
         self.dimensions = dimensions
         self._request_dimensions = native_dimensions or dimensions
 
+    # ponytail: fixed batch size, sequential — a full-corpus reindex is ~1700
+    # chunks and runs as a background job, so throughput does not matter yet.
+    # Parallelise only if reindex latency becomes a real complaint.
+    BATCH_SIZE = 64
+
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        response = await self._client.embeddings.create(
-            model=self._model,
-            input=texts,
-            dimensions=self._request_dimensions,
-            encoding_format="float",
-        )
-        return [self._fit(item.embedding) for item in response.data]
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), self.BATCH_SIZE):
+            response = await self._client.embeddings.create(
+                model=self._model,
+                input=texts[start : start + self.BATCH_SIZE],
+                dimensions=self._request_dimensions,
+                encoding_format="float",
+            )
+            # The API may return items out of order; index is authoritative.
+            for item in sorted(response.data, key=lambda d: d.index):
+                vectors.append(self._fit(item.embedding))
+        return vectors
 
     def _fit(self, vector: list[float]) -> list[float]:
         if len(vector) <= self.dimensions:
