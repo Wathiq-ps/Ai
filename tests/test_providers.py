@@ -47,11 +47,11 @@ def test_embedding_provider_batches_truncates_and_keeps_input_order():
     provider = OpenAICompatibleEmbeddingProvider(
         SimpleNamespace(embeddings=_StubEmbeddings()), "m", 1536, native_dimensions=2048
     )
-    texts = [f"t{i}" for i in range(70)]
+    texts = [f"t{i}" for i in range(provider.BATCH_SIZE + 6)]
 
     vectors = asyncio.run(provider.embed(texts))
 
-    assert [len(batch) for batch in calls] == [64, 6]
-    assert len(vectors) == 70
+    assert [len(batch) for batch in calls] == [provider.BATCH_SIZE, 6]
+    assert len(vectors) == len(texts)
     assert all(len(v) == 1536 for v in vectors)
     assert math.isclose(math.sqrt(sum(x * x for x in vectors[0])), 1.0, rel_tol=1e-6)

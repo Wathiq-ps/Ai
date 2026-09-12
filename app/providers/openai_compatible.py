@@ -61,8 +61,11 @@ class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
 
     # ponytail: fixed batch size, sequential — a full-corpus reindex is ~1700
     # chunks and runs as a background job, so throughput does not matter yet.
-    # Parallelise only if reindex latency becomes a real complaint.
-    BATCH_SIZE = 64
+    # Sized against the free tier's *request* quota (50/day), not latency: 64
+    # would need 27 requests per rebuild, 256 needs 7. Ceiling: if a provider
+    # caps inputs per request below this, embed() starts 400-ing — lower it
+    # (the first full run on a fresh quota is what proves the number).
+    BATCH_SIZE = 256
 
     # OpenRouter's free tier allows 20 requests/minute across free models and
     # answers 429 past that. A full-corpus reindex is ~27 batches, so this is
