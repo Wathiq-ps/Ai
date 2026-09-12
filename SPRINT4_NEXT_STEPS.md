@@ -3,6 +3,53 @@
 Supersedes the 2026-09-07 version, which was stale on three points: the DB
 blocker, whether the schema had ever been touched, and whether the SQL worked.
 
+## 2026-09-12 update: Sprint 6 agent built, corpus indexing hit the free-tier cap
+
+Built today (all committed, 59 tests green):
+
+- **`analyze_contract` (Sprint 6 / 1D)** — `app/analyze_contract.py`, same
+  shape as the drafting agent: retrieve per clause topic, one LLM call with a
+  bounded JSON-repair loop, citations hydrated from our own retrieval so a
+  finding cannot cite law we never read (BR-25). Risk score is computed here,
+  not asked of the model: severity-weighted sum capped at 100, versioned
+  `risk-v1` (closes open decision #5's determinism half).
+- **`reindex` job kind (UC-080)** — `app/reindex.py` + `scripts/reindex.py`.
+  Rebuilds a jurisdiction's kb_version from the documents already in
+  `knowledge.documents`, re-reading each `raw_path`. Scanned PDFs with no
+  loader are skipped, not fatal.
+- **60s job budget (NFR-1.1)** — over budget now ends in a signed `timed_out`
+  callback. Reindex is exempt (a rebuild is minutes of embedding calls).
+- **Deploy artifact** — `Dockerfile` (uv image, `$PORT`, single worker).
+  Verified locally: builds at 313MB, container answers `/health`.
+- **Embedder actually works now.** Three real bugs, all live-verified fixed:
+  the model id `nvidia/llama-nemotron-embed-vl-1b-v2:free` no longer resolves
+  (now `nvidia/nemotron-3-embed-1b:free`); nothing passed `native_dimensions`,
+  so every request asked for 1536 and got a 400; and `math` was used without
+  being imported. Live: 1536-d unit vectors, ar/en cosine 0.546.
+
+### Blocked, needs you
+
+1. **OpenRouter free tier is out of quota for the day** — 50 requests/day, and
+   a full-corpus rebuild costs 7 at the new batch size of 256 (it cost 27
+   before; two failed attempts burned the day). Nothing is indexed:
+   `knowledge.chunks` is empty and there is no `kb_version` row, so retrieval
+   returns nothing and both agents correctly fail closed. Either wait for the
+   daily reset and run `uv run python scripts/reindex.py PS real-corpus-v1`,
+   or add credits — this is the same paid-endpoint decision already flagged
+   below under "Still open, not code", now forced.
+2. **The four seeded sources are `is_verified = false`.** Only Laravel can
+   verify them (`sources_verified_complete` needs a `verified_by` in
+   `app.users`, which `wathiq_ai` cannot read). Until an admin verifies them,
+   `search()` serves nothing even with an index built (BR-24).
+3. **Railway deploy needs your credentials** — no Railway CLI on this machine
+   and the MCP server is unauthenticated. The Dockerfile is ready; the service
+   still has to be created in `Wathiq-Back` on the private network, with
+   `AI_SERVICE_URL` / `AI_SERVICE_API_KEY` / `AI_WEBHOOK_SECRET` set on both
+   sides. This is what blocks Sprint 7's Laravel wiring.
+
+Not touched: the RAG eval harness / golden set (Sprint 5's first half), PDF
+OCR for the two scanned statutes, `answer_query`/`summarize`.
+
 ## 2026-09-09 update: corpus hunt happened, hit an OCR wall
 
 Since this doc was written: `generate_contract` (Sprint 5, the drafting node)
