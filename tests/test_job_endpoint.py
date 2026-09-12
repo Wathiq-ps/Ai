@@ -2,6 +2,7 @@
 Everything here is offline: httpx.AsyncClient is swapped for a capturing
 fake, and app.main.generate_contract/get_pool are monkeypatched per test."""
 
+import asyncio
 import json
 import uuid
 
@@ -186,3 +187,23 @@ def test_unsupported_job_kind_is_accepted_but_not_dispatched():
 
 async def _async_none():
     return None
+
+
+def test_job_over_the_time_budget_reports_timed_out(monkeypatch):
+    async def _never_finishes(*args, **kwargs):
+        await asyncio.sleep(10)
+
+    monkeypatch.setattr(main, "generate_contract", _never_finishes)
+    monkeypatch.setattr(main, "get_pool", lambda: _async_none())
+    monkeypatch.setattr(settings, "job_timeout_seconds", 0.01)
+
+    response = _post_job(
+        str(uuid.uuid4()), {"contract_type": "sale", "parties": [{"name": "A"}], "property": {"address": "Gaza"}}
+    )
+    assert response.status_code == 202
+
+    [used] = _CapturingClient.instances
+    [call] = used.calls
+    body = _verify_signature(call)
+    assert body["status"] == "timed_out"
+    assert "NFR-1.1" in body["error"]

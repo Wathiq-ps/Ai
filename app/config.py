@@ -7,6 +7,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     ai_service_api_key: str = ""
+    # NFR-1.1: a contract must be generated/analysed within 60s. Reindex is
+    # deliberately not bounded by this — a full-corpus rebuild is minutes.
+    job_timeout_seconds: float = 60.0
     ai_webhook_secret: str = ""
     laravel_callback_url: str = "http://localhost:8000/api/ai/callback"
 

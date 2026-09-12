@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import time
@@ -87,17 +88,28 @@ async def _run_generate_contract(job: JobRequest) -> None:
             raise GenerationFailed(f"payload missing required field(s): {missing}")
 
         pool = await get_pool()
-        result = await generate_contract(
-            pool,
-            get_llm_provider(),
-            get_embedding_provider(),
-            jurisdiction_id=job.jurisdiction_id,
-            contract_type=payload["contract_type"],
-            parties=payload["parties"],
-            property=payload["property"],
-            language=payload.get("language", "ar"),
+        result = await asyncio.wait_for(
+            generate_contract(
+                pool,
+                get_llm_provider(),
+                get_embedding_provider(),
+                jurisdiction_id=job.jurisdiction_id,
+                contract_type=payload["contract_type"],
+                parties=payload["parties"],
+                property=payload["property"],
+                language=payload.get("language", "ar"),
+            ),
+            timeout=settings.job_timeout_seconds,
         )
     except Exception as exc:
+        if isinstance(exc, TimeoutError):
+            await _send_callback(
+                job.job_id, "generate_contract", status="timed_out",
+                error=f"exceeded {settings.job_timeout_seconds}s budget (NFR-1.1)",
+                provider=provider, model_id=model_id, kb_version_id=None,
+                prompt_version=GENERATE_CONTRACT_PROMPT_VERSION,
+            )
+            return
         if not isinstance(exc, GenerationFailed):
             logger.exception("job %s (generate_contract) failed unexpectedly", job.job_id)
         await _send_callback(
@@ -134,15 +146,26 @@ async def _run_analyze_contract(job: JobRequest) -> None:
         if not payload.get("content"):
             raise AnalysisFailed("payload missing required field: content")
         pool = await get_pool()
-        result = await analyze_contract(
-            pool,
-            get_llm_provider(),
-            get_embedding_provider(),
-            jurisdiction_id=job.jurisdiction_id,
-            content=payload["content"],
-            contract_type=payload.get("contract_type"),
+        result = await asyncio.wait_for(
+            analyze_contract(
+                pool,
+                get_llm_provider(),
+                get_embedding_provider(),
+                jurisdiction_id=job.jurisdiction_id,
+                content=payload["content"],
+                contract_type=payload.get("contract_type"),
+            ),
+            timeout=settings.job_timeout_seconds,
         )
     except Exception as exc:
+        if isinstance(exc, TimeoutError):
+            await _send_callback(
+                job.job_id, "analyze_contract", status="timed_out",
+                error=f"exceeded {settings.job_timeout_seconds}s budget (NFR-1.1)",
+                provider=provider, model_id=model_id, kb_version_id=None,
+                prompt_version=ANALYZE_CONTRACT_PROMPT_VERSION,
+            )
+            return
         if not isinstance(exc, AnalysisFailed):
             logger.exception("job %s (analyze_contract) failed unexpectedly", job.job_id)
         await _send_callback(
