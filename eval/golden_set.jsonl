@@ -1,0 +1,15 @@
+{"id": "rent-eviction", "question": "متى يجوز للمحكمة أن تحكم بإخلاء المستأجر من العقار؟", "law_type": "rent", "articles": ["المادة (4)"]}
+{"id": "rent-deposit", "question": "هل يعتبر إيداع الأجرة في صندوق المحكمة وفاءً قانونياً؟", "law_type": "rent", "articles": ["المادة (4 مكرر)"]}
+{"id": "rent-scope", "question": "على أي العقارات تسري أحكام قانون المالكين والمستأجرين؟", "law_type": "rent", "articles": ["المادة (2)"]}
+{"id": "rent-definitions", "question": "ما المقصود بلفظة عقارات في قانون المالكين والمستأجرين؟", "law_type": "rent", "articles": ["المادة (3)"]}
+{"id": "rent-harassment", "question": "ماذا يحق للمستأجر إذا أضر المؤجر بالعقار للضغط عليه لإخلائه؟", "law_type": "rent", "articles": ["المادة (6)"]}
+{"id": "rent-increase", "question": "كيف تحتسب الزيادة على بدل الإيجار الأساسي؟", "law_type": "rent", "articles": ["المادة (5 مكررة أ)", "المادة (5 مكررة ج)"]}
+{"id": "foreign-lease-permit", "question": "هل يحتاج غير الفلسطيني إلى إذن لاستئجار أموال غير منقولة؟", "law_type": "ownership", "articles": ["المادة (2)"]}
+{"id": "foreign-lease-over-three-years", "question": "ما حكم عقود إيجار غير الفلسطينيين التي تجاوزت ثلاث سنوات دون إذن؟", "law_type": "ownership", "articles": ["المادة (2 مكرر)"]}
+{"id": "foreign-ownership-limits", "question": "ما شروط تملك غير الأردني للأموال غير المنقولة؟", "law_type": "ownership", "articles": ["المادة (3)"]}
+{"id": "foreign-inheritance", "question": "هل يجوز لغير الأردني تسجيل أموال غير منقولة آلت إليه بالإرث دون إذن؟", "law_type": "ownership", "articles": ["المادة (4)"]}
+{"id": "tax-liability", "question": "على من تقع ضريبة الأبنية والأراضي؟", "law_type": "tax", "articles": ["المادة (11)"]}
+{"id": "tax-exemptions", "question": "ما هي الإعفاءات والتنزيلات من ضريبة الأبنية والأراضي؟", "law_type": "tax", "articles": ["المادة (12)"]}
+{"id": "tax-assessment-basis", "question": "ما أساس احتساب الضريبة وأصول التخمين؟", "law_type": "tax", "articles": ["المادة (7)"]}
+{"id": "tax-objection", "question": "كيف يعترض المكلف على قائمة التخمين؟", "law_type": "tax", "articles": ["المادة (9)"]}
+{"id": "tax-appeal", "question": "كيف يستأنف المكلف على قائمة التخمين؟", "law_type": "tax", "articles": ["المادة (10)"]}
