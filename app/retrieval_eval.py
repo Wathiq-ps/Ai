@@ -25,6 +25,12 @@ from pathlib import Path
 GOLDEN_SET_PATH = Path(__file__).resolve().parent.parent / "eval" / "golden_set.jsonl"
 DEFAULT_BETA = 2.0
 
+# Measured 2026-09-12 against kb_version `real-corpus-v1` (1714 chunks,
+# nemotron-3-embed-1b@1536): macro recall 0.77 @k=1, 0.93 @k=3, 1.00 @k=5.
+# That is why both agents retrieve k=5 per clause topic — k costs no extra
+# API requests, only prompt tokens. Re-measure after any embedding-model or
+# chunker change; a drop below ~0.9 @k=5 means the change regressed.
+
 
 @dataclass
 class GoldenQuery:

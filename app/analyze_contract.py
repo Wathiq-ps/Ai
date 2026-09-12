@@ -66,7 +66,7 @@ async def analyze_contract(
     jurisdiction_id: uuid.UUID,
     content: str,
     contract_type: str | None = None,
-    k_per_topic: int = 3,
+    k_per_topic: int = 5,
 ) -> AnalyzeContractResult:
     context = await _retrieve_context(
         pool, embedder, jurisdiction_id=jurisdiction_id, contract_type=contract_type,

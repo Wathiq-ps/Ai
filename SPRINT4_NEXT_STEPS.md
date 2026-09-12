@@ -41,9 +41,35 @@ Built today (all committed, 59 tests green):
   run confirms BR-24 live: `search()` returns 0 hits while the sources are
   unverified, even with a full index in place.
 
+### 2026-09-12, later: KB is built and the retriever measures well
+
+A key from an account that has purchased credits (`is_free_tier: false`,
+1000 free-model requests/day instead of 50) cleared blocker 1.
+`kb_version` **`real-corpus-v1` is active: 4 documents, 1714 chunks**, real
+nemotron-3-embed-1b vectors, 63.4s, 7 API requests.
+
+Golden-set retrieval against it (scored with the `is_verified` filter lifted,
+read-only, since no admin has verified the sources yet):
+
+| k | macro recall | macro precision |
+|---|---|---|
+| 1 | 0.77 | 0.80 |
+| 3 | 0.93 | 0.39 |
+| 5 | **1.00** | 0.25 |
+
+Precision falls because each golden entry expects a single article out of `k`
+returned — 0.25 at k=5 is the arithmetic ceiling, not a quality signal. Both
+agents now retrieve **k=5** per clause topic: k costs no extra API requests,
+only prompt tokens. Caveat on how easy this is: the three statutes are short
+and each query is filtered to its own `law_type`, so this measures "can it
+find the right article inside one small law", not "can it pick the right law".
+
+Remaining blockers are 2 and 3 below; blocker 1 is closed.
+
 ### Blocked, needs you
 
-1. **OpenRouter free tier is out of quota for the day** — 50 requests/day, and
+1. ~~**OpenRouter free tier is out of quota for the day**~~ — closed, see above.
+   Historical note: the original key was on the no-purchase tier — 50 requests/day, and
    a full-corpus rebuild costs 7 at the new batch size of 256 (it cost 27
    before; two failed attempts burned the day). Nothing is indexed:
    `knowledge.chunks` is empty and there is no `kb_version` row, so retrieval

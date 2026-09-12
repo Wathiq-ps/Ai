@@ -85,7 +85,7 @@ async def generate_contract(
     parties: list[dict],
     property: dict,
     language: str = "ar",
-    k_per_clause: int = 3,
+    k_per_clause: int = 5,
 ) -> GenerateContractResult:
     context = await _retrieve_context(
         pool, embedder, jurisdiction_id=jurisdiction_id, contract_type=contract_type,
