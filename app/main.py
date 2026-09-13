@@ -180,6 +180,20 @@ async def _run_analyze_contract(job: JobRequest) -> None:
         "analyze_contract",
         status="succeeded",
         result={
+            # The checklist is emitted alongside findings, not instead of them:
+            # every non-`present` verdict is already mirrored as a
+            # missing_clause finding, so a consumer that only reads findings[]
+            # is unaffected. Read coverage[] when you want the clauses that
+            # were checked and found fine — findings[] cannot tell you that.
+            "coverage": [
+                {
+                    "clause_kind": c.clause_kind,
+                    "status": c.status,
+                    "note": c.note,
+                    "citations": [_citation_json(x) for x in c.citations],
+                }
+                for c in result.coverage
+            ],
             "findings": [
                 {
                     "kind": f.kind,

@@ -28,6 +28,18 @@ from app.knowledge import SearchResult, search
 from app.providers.base import EmbeddingProvider, LLMProvider
 
 FINDING_KINDS = ["missing_clause", "legal_conflict", "ambiguity", "suggestion", "risk"]
+
+# Which findings get reported was the least stable thing about this agent:
+# over four runs of one contract, mean pairwise Jaccard on the finding set was
+# 0.36 and only 2 of 11 distinct findings appeared every time, with the risk
+# score swinging 43-70. Sampling determinism is not available to us (a hosted
+# reasoning model ignores temperature/seed for this purpose), so the fix is to
+# stop asking an open question. The model must now return a verdict for every
+# clause kind, so `missing_clause` findings are an enumeration over a fixed
+# checklist rather than whatever it felt like mentioning — and their severity
+# is mapped here, not judged.
+COVERAGE_STATUSES = ["present", "incomplete", "absent"]
+COVERAGE_SEVERITY = {"absent": "high", "incomplete": "medium"}
 SEVERITIES = ["low", "medium", "high", "critical"]
 
 # Deterministic rubric: severity weights summed and capped at 100. Chosen so a
@@ -56,7 +68,16 @@ class Finding:
 
 
 @dataclass
+class ClauseCoverage:
+    clause_kind: str
+    status: str
+    note: str
+    citations: list[Citation]
+
+
+@dataclass
 class AnalyzeContractResult:
+    coverage: list[ClauseCoverage]
     findings: list[Finding]
     risk_score: int
     summary_ar: str
@@ -92,11 +113,12 @@ async def analyze_contract(
         prompt = user if not last_error else f"{user}\n\nYour last reply was invalid: {last_error}. Reply with corrected JSON only."
         raw = await llm.chat(system, prompt, json_mode=True, max_tokens=16384)
         try:
-            findings, summary_ar, summary_en = _parse_and_ground(raw, context)
+            coverage, findings, summary_ar, summary_en = _parse_and_ground(raw, context)
         except _InvalidAnalysis as exc:
             last_error = str(exc)
             continue
         return AnalyzeContractResult(
+            coverage=coverage,
             findings=findings,
             risk_score=risk_score(findings),
             summary_ar=summary_ar,
@@ -161,10 +183,19 @@ def _build_prompt(content: str, contract_type: str | None, context: dict[str, Se
     system = (
         "You are a Palestinian-law contract reviewer. Judge the contract only against the law "
         "excerpts provided; do not invent legal rules. Reply with JSON only, no prose, no markdown "
-        'fences, shaped exactly as: {"summary_ar": "...", "summary_en": "...", "findings": '
+        'fences, shaped exactly as: {"summary_ar": "...", "summary_en": "...", "coverage": '
+        '{"parties": {"status": "...", "note": "...", "cites": ["C1"]}, ...}, "findings": '
         '[{"kind": "...", "severity": "...", "title_ar": "...", "title_en": "...", '
         '"description": "...", "suggested_text": "..." or null, "cites": ["C1"], "confidence": 0.8}]}. '
-        f"kind must be one of: {', '.join(FINDING_KINDS)}. "
+        f"`coverage` MUST contain an entry for every one of these {len(CLAUSE_KINDS)} clause kinds, "
+        f"with no others and none left out: {', '.join(CLAUSE_KINDS)}. This is a checklist, not a "
+        "list of problems — say something about each one even when it is fine. status is "
+        f"{' | '.join(COVERAGE_STATUSES)}: `present` = the clause is there and usable; `incomplete` "
+        "= the clause is there but unusable as written (an unfilled blank, a term left open); "
+        "`absent` = there is no such clause. note is one Arabic sentence saying why, and is what the "
+        "reader sees, so name articles by number. A missing or inadequate clause is reported HERE "
+        f"and nowhere else — do NOT put missing_clause entries in `findings`.\n"
+        f"`findings` carries only the judgement calls: {', '.join(k for k in FINDING_KINDS if k != 'missing_clause')}. "
         f"severity must be one of: {', '.join(SEVERITIES)}, judged against these anchors — the "
         "risk score is computed from them, so apply them literally rather than by feel:\n"
         "  critical — the contract or the term is void or unenforceable, or it strips a party of a "
@@ -181,9 +212,7 @@ def _build_prompt(content: str, contract_type: str | None, context: dict[str, Se
         "Refer to law the way the excerpt itself does — by its article number, e.g. المادة (4). "
         "suggested_text is contract Arabic ready to paste into the contract, using bracketed blanks "
         "such as [تاريخ بدء الإجارة] for anything the parties must still supply — never dotted lines. "
-        f"Check completeness against these clause groups: {', '.join(CLAUSE_KINDS)} — report each "
-        "absent or inadequate one as a missing_clause finding with suggested_text. "
-        "Also report contradictions with the excerpts (legal_conflict), vague or unenforceable "
+        "Report contradictions with the excerpts (legal_conflict), vague or unenforceable "
         "wording (ambiguity), improvements (suggestion), and commercial/legal exposure (risk). "
         "summary_ar is Arabic, summary_en is English; both summarise the contract's state in a "
         "short paragraph. Return an empty findings array if the contract is sound."
@@ -196,7 +225,9 @@ def _build_prompt(content: str, contract_type: str | None, context: dict[str, Se
     return system, user
 
 
-def _parse_and_ground(raw: str, context: dict[str, SearchResult]) -> tuple[list[Finding], str, str]:
+def _parse_and_ground(
+    raw: str, context: dict[str, SearchResult]
+) -> tuple[list[ClauseCoverage], list[Finding], str, str]:
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -208,12 +239,94 @@ def _parse_and_ground(raw: str, context: dict[str, SearchResult]) -> tuple[list[
         if not isinstance(value, str) or not value.strip():
             raise _InvalidAnalysis(f"missing or empty {name!r}")
 
+    coverage = _parse_coverage(data.get("coverage"), context)
+
     raw_findings = data.get("findings")
     if not isinstance(raw_findings, list):
         raise _InvalidAnalysis("missing 'findings' array")
 
     findings = [_ground_finding(entry, context) for entry in raw_findings]
-    return findings, summary_ar.strip(), summary_en.strip()
+    if any(f.kind == "missing_clause" for f in findings):
+        raise _InvalidAnalysis("missing_clause belongs in 'coverage', not 'findings'")
+
+    # Derived, not asked for: a non-`present` checklist verdict *is* a
+    # missing_clause finding, at a severity this code assigns. Emitting them
+    # into findings[] keeps the wire contract Laravel already has, while the
+    # checklist is what makes the set reproducible.
+    findings = [_coverage_finding(c) for c in coverage if c.status != "present"] + findings
+    return coverage, findings, summary_ar.strip(), summary_en.strip()
+
+
+def _parse_coverage(raw: object, context: dict[str, SearchResult]) -> list[ClauseCoverage]:
+    """Every clause kind, every time — that fixed cardinality is the whole
+    point, so a short checklist is a failure the repair loop must fix."""
+    if not isinstance(raw, dict):
+        raise _InvalidAnalysis("missing 'coverage' object")
+
+    missing = [k for k in CLAUSE_KINDS if k not in raw]
+    if missing:
+        raise _InvalidAnalysis(f"coverage is missing clause kind(s): {missing}")
+    unknown = [k for k in raw if k not in CLAUSE_KINDS]
+    if unknown:
+        raise _InvalidAnalysis(f"coverage has unknown clause kind(s): {sorted(unknown)}")
+
+    coverage = []
+    for kind in CLAUSE_KINDS:
+        entry = raw[kind]
+        if not isinstance(entry, dict):
+            raise _InvalidAnalysis(f"coverage entry for {kind!r} is not an object")
+        status = entry.get("status")
+        if status not in COVERAGE_STATUSES:
+            raise _InvalidAnalysis(f"unknown coverage status {status!r} for {kind!r}")
+        note = entry.get("note")
+        if not isinstance(note, str) or not note.strip():
+            raise _InvalidAnalysis(f"empty coverage note for {kind!r}")
+        if _LABEL_IN_PROSE.search(note):
+            raise _InvalidAnalysis(
+                f"coverage note for {kind!r} names an internal excerpt label; "
+                "cite the article number instead"
+            )
+        cites = entry.get("cites") or []
+        if not all(label in context for label in cites):
+            raise _InvalidAnalysis(f"coverage entry for {kind!r} cites an unknown label")
+        # BR-25 again: a non-`present` verdict becomes a finding, and a finding
+        # with no grounding is not a finding. A clean clause needs no citation.
+        if status != "present" and not cites:
+            raise _InvalidAnalysis(f"coverage entry for {kind!r} is {status} but cites nothing")
+        coverage.append(
+            ClauseCoverage(
+                clause_kind=kind,
+                status=status,
+                note=note.strip(),
+                citations=[_citation(context[label]) for label in sorted(set(cites))],
+            )
+        )
+    return coverage
+
+
+def _citation(result: SearchResult) -> Citation:
+    return Citation(
+        source_id=result.source_id,
+        article_ref=result.article,
+        chunk_id=result.chunk_id,
+        excerpt=result.content,
+    )
+
+
+def _coverage_finding(entry: ClauseCoverage) -> Finding:
+    """A checklist verdict rendered as a finding. Severity comes from the
+    status table, not from the model, so the same verdict always scores the
+    same — which is what makes risk_score reproducible."""
+    return Finding(
+        kind="missing_clause",
+        severity=COVERAGE_SEVERITY[entry.status],
+        title_ar=f"{'بند غائب' if entry.status == 'absent' else 'بند غير مكتمل'}: {entry.clause_kind}",
+        title_en=f"{'Absent' if entry.status == 'absent' else 'Incomplete'} clause: {entry.clause_kind}",
+        description=entry.note,
+        suggested_text=None,
+        citations=entry.citations,
+        confidence=1.0,
+    )
 
 
 def _ground_finding(entry: object, context: dict[str, SearchResult]) -> Finding:
@@ -261,14 +374,6 @@ def _ground_finding(entry: object, context: dict[str, SearchResult]) -> Finding:
         title_en=entry["title_en"].strip(),
         description=entry["description"].strip(),
         suggested_text=suggested.strip() if isinstance(suggested, str) and suggested.strip() else None,
-        citations=[
-            Citation(
-                source_id=context[label].source_id,
-                article_ref=context[label].article,
-                chunk_id=context[label].chunk_id,
-                excerpt=context[label].content,
-            )
-            for label in sorted(set(cites))
-        ],
+        citations=[_citation(context[label]) for label in sorted(set(cites))],
         confidence=float(confidence),
     )

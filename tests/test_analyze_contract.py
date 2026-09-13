@@ -7,6 +7,7 @@ import pytest
 
 import app.analyze_contract as ac
 from app.analyze_contract import (
+    CLAUSE_KINDS,
     AnalysisFailed,
     Finding,
     _InvalidAnalysis,
@@ -34,17 +35,31 @@ def _result(seed: int = 1) -> SearchResult:
     )
 
 
-def _analysis_json(findings: list[dict]) -> str:
-    return json.dumps({"summary_ar": "ملخص", "summary_en": "summary", "findings": findings})
+def _coverage(**overrides) -> dict:
+    """A full checklist — every clause kind present and clean unless overridden."""
+    cov = {k: {"status": "present", "note": "البند مستوفٍ."} for k in CLAUSE_KINDS}
+    cov.update(overrides)
+    return cov
+
+
+def _analysis_json(findings: list[dict], coverage: dict | None = None) -> str:
+    return json.dumps(
+        {
+            "summary_ar": "ملخص",
+            "summary_en": "summary",
+            "coverage": coverage if coverage is not None else _coverage(),
+            "findings": findings,
+        }
+    )
 
 
 def _finding(**overrides) -> dict:
     entry = {
-        "kind": "missing_clause",
+        "kind": "ambiguity",
         "severity": "high",
-        "title_ar": "بند مفقود",
-        "title_en": "Missing clause",
-        "description": "No dispute resolution clause.",
+        "title_ar": "صياغة غامضة",
+        "title_en": "Ambiguous wording",
+        "description": "The handover condition is not described.",
         "suggested_text": "Add one.",
         "cites": ["C1"],
         "confidence": 0.8,
@@ -56,7 +71,7 @@ def _finding(**overrides) -> dict:
 def test_parse_and_ground_hydrates_real_citations_from_context():
     context = {"C1": _result(1)}
 
-    findings, summary_ar, summary_en = _parse_and_ground(_analysis_json([_finding()]), context)
+    _cov, findings, summary_ar, summary_en = _parse_and_ground(_analysis_json([_finding()]), context)
 
     assert (summary_ar, summary_en) == ("ملخص", "summary")
     assert len(findings) == 1
@@ -67,7 +82,7 @@ def test_parse_and_ground_hydrates_real_citations_from_context():
 
 
 def test_parse_and_ground_accepts_a_clean_contract():
-    findings, _, _ = _parse_and_ground(_analysis_json([]), {"C1": _result(1)})
+    _cov, findings, _, _ = _parse_and_ground(_analysis_json([]), {"C1": _result(1)})
 
     assert findings == []
     assert risk_score(findings) == 0
@@ -190,6 +205,6 @@ def test_parse_and_ground_rejects_internal_labels_leaking_into_prose(field, valu
 def test_parse_and_ground_allows_prose_that_merely_looks_label_ish(value):
     context = {"C1": _result(1)}
 
-    findings, _, _ = _parse_and_ground(_analysis_json([_finding(description=value)]), context)
+    _cov, findings, _, _ = _parse_and_ground(_analysis_json([_finding(description=value)]), context)
 
     assert findings[0].description == value

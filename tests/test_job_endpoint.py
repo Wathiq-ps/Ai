@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main
-from app.analyze_contract import AnalyzeContractResult, Finding
+from app.analyze_contract import AnalyzeContractResult, ClauseCoverage, Finding
 from app.config import settings
 from app.generate_contract import Citation, Clause, GenerateContractResult
 from app.security import sign_callback
@@ -116,6 +116,14 @@ def test_analyze_contract_sends_signed_callback_with_findings_and_score(monkeypa
 
     async def _fake_analyze_contract(*args, **kwargs):
         return AnalyzeContractResult(
+            coverage=[
+                ClauseCoverage(
+                    clause_kind="dispute_resolution",
+                    status="absent",
+                    note="لا يوجد بند لتسوية النزاعات.",
+                    citations=[Citation(source_id=source_id, article_ref="Article (1)", chunk_id=chunk_id, excerpt="...")],
+                )
+            ],
             findings=[
                 Finding(
                     kind="missing_clause",
@@ -208,3 +216,49 @@ def test_job_over_the_time_budget_reports_timed_out(monkeypatch):
     body = _verify_signature(call)
     assert body["status"] == "timed_out"
     assert "NFR-1.1" in body["error"]
+
+
+def test_analyze_callback_carries_the_full_clause_checklist(monkeypatch):
+    """coverage[] is what makes a report reproducible: it names every clause
+    that was checked, including the ones that were fine, which findings[]
+    cannot express. Laravel needs it on the wire, not just in our dataclass."""
+    source_id, chunk_id = uuid.uuid4(), uuid.uuid4()
+    cite = Citation(source_id=source_id, article_ref="Article (1)", chunk_id=chunk_id, excerpt="...")
+
+    async def _fake_analyze_contract(*args, **kwargs):
+        return AnalyzeContractResult(
+            coverage=[
+                ClauseCoverage(clause_kind="parties", status="present", note="مستوفٍ.", citations=[]),
+                ClauseCoverage(clause_kind="duration", status="incomplete", note="التواريخ فارغة.", citations=[cite]),
+            ],
+            findings=[],
+            risk_score=8,
+            summary_ar="ملخص",
+            summary_en="summary",
+            confidence=0.9,
+            kb_version_id=uuid.uuid4(),
+        )
+
+    monkeypatch.setattr(main, "analyze_contract", _fake_analyze_contract)
+    monkeypatch.setattr(main, "get_pool", lambda: _async_none())
+    _CapturingClient.instances.clear()
+    response = client.post(
+        "/v1/jobs",
+        headers={"X-API-Key": "test-key"},
+        json={
+            "job_id": str(uuid.uuid4()),
+            "kind": "analyze_contract",
+            "jurisdiction_id": str(uuid.uuid4()),
+            "payload": {"contract_version_id": str(uuid.uuid4()), "content": "contract text"},
+        },
+    )
+    assert response.status_code == 202
+
+    [used] = _CapturingClient.instances
+    [call] = used.calls
+    body = _verify_signature(call)
+    coverage = body["result"]["coverage"]
+    assert [c["clause_kind"] for c in coverage] == ["parties", "duration"]
+    assert coverage[0]["status"] == "present" and coverage[0]["citations"] == []
+    assert coverage[1]["status"] == "incomplete"
+    assert coverage[1]["citations"][0]["chunk_id"] == str(chunk_id)

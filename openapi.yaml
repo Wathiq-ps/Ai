@@ -197,16 +197,45 @@ components:
 
     AnalyzeContractResult:
       type: object
-      required: [findings, risk_score, summary_ar, summary_en]
+      required: [coverage, findings, risk_score, risk_rubric_version, summary_ar, summary_en]
       properties:
+        coverage:
+          type: array
+          description: >
+            The completeness checklist: one entry per clause kind, always all of
+            them, including the clauses that were found fine. This is what makes
+            a report reproducible -- the model cannot silently decline to mention
+            a clause. Every entry whose status is not `present` is ALSO emitted
+            as a missing_clause finding, so a consumer that only reads findings[]
+            loses nothing; read coverage[] when you need "what was checked and
+            passed", which findings[] cannot express.
+          minItems: 11
+          maxItems: 11
+          items:
+            $ref: "#/components/schemas/ClauseCoverage"
         findings:
           type: array
+          description: >
+            Completeness findings derived from coverage[] (kind=missing_clause,
+            severity assigned by the service, not the model) followed by the
+            model's judgement findings (legal_conflict, ambiguity, suggestion,
+            risk).
           items:
             $ref: "#/components/schemas/Finding"
         risk_score:
           type: integer
           minimum: 0
           maximum: 100
+          description: >
+            Severity-weighted sum over findings, capped at 100. Computed by the
+            service, never asked of the model. Bands used by the UI:
+            0-29 low, 30-59 medium, 60+ high.
+        risk_rubric_version:
+          type: string
+          example: risk-v1
+          description: >
+            Scores from different rubric versions are NOT comparable. Store it
+            next to the score and re-run rather than comparing across versions.
         summary_ar:
           type: string
         summary_en:
@@ -217,6 +246,31 @@ components:
           maximum: 1
         usage:
           $ref: "#/components/schemas/Usage"
+
+    ClauseCoverage:
+      type: object
+      required: [clause_kind, status, note, citations]
+      properties:
+        clause_kind:
+          type: string
+          enum: [parties, subject, price, payment_terms, duration,
+                 obligations, warranties, termination,
+                 dispute_resolution, governing_law, other]
+        status:
+          type: string
+          enum: [present, incomplete, absent]
+          description: >
+            present = the clause is there and usable.
+            incomplete = present but unusable as written (an unfilled blank).
+            absent = there is no such clause.
+        note:
+          type: string
+          description: One Arabic sentence, user-facing. Names articles by number.
+        citations:
+          type: array
+          description: Empty is allowed only when status is `present`.
+          items:
+            $ref: "#/components/schemas/Citation"
 
     Finding:
       type: object
@@ -282,6 +336,10 @@ components:
 
     Usage:
       type: object
+      description: >
+        NOT POPULATED YET -- the service does not currently capture per-call
+        token counts or latency. Treat as absent and do not build reporting on
+        it until this note is removed.
       properties:
         prompt_tokens:
           type: integer
