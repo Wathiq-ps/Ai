@@ -1,5 +1,8 @@
-import asyncio, asyncpg, uuid
+import asyncio
 from datetime import date
+
+import asyncpg
+
 from app.config import settings
 from app.document_loader import load_corpus_file
 from app.knowledge import ingest_document

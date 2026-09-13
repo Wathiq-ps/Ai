@@ -13,7 +13,7 @@ indexed but `search()` won't serve them (BR-24).
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import asyncpg
 
@@ -81,7 +81,7 @@ async def reindex(
         pool,
         embedder,
         jurisdiction_id=jurisdiction_id,
-        tag=tag or f"reindex-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}",
+        tag=tag or f"reindex-{datetime.now(UTC):%Y%m%dT%H%M%SZ}",
         embedding_model=embedding_model,
         documents=documents,
         notes=notes,

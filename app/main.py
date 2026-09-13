@@ -8,9 +8,9 @@ import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, Request
 from pydantic import BaseModel
 
+from app.analyze_contract import RISK_RUBRIC_VERSION, AnalysisFailed, analyze_contract
 from app.config import settings
 from app.db import get_pool
-from app.analyze_contract import RISK_RUBRIC_VERSION, AnalysisFailed, analyze_contract
 from app.generate_contract import GenerationFailed, generate_contract
 from app.logging_conf import configure_logging, new_trace_id, trace_id_var
 from app.providers import get_embedding_provider, get_llm_provider
