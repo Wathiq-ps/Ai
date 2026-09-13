@@ -55,6 +55,24 @@ CONTRACT_LAW_TYPES = {
     "sale": ["sale", "ownership", "general"],
 }
 
+# What each clause has to *do*, in the register Palestinian/Jordanian leases
+# actually use (see the templates surveyed 2026-09-13). Without per-kind
+# direction the model falls back on reciting whatever it retrieved — which is
+# exactly what `termination` and `other` did.
+DRAFTING_NOTES = {
+    "parties": "Name both parties as الطرف الأول (المؤجر) and الطرف الثاني (المستأجر) with their id numbers, and record that they contract in full legal capacity.",
+    "subject": "Describe the let property and the use it is let for, and record that the tenant received it in the condition described.",
+    "price": "State the rent figure and the period it covers. Nothing else belongs in this clause.",
+    "payment_terms": "State when and how rent falls due, what counts as valid discharge, and what happens on late payment.",
+    "duration": "State the start date, the end date, and what happens at expiry (renewal or vacancy). Use bracketed blanks for any date not supplied.",
+    "obligations": "A numbered list of what each party must and must not do — upkeep, subletting, lawful use, returning the property as received.",
+    "warranties": "The landlord's warranty of title and of quiet enjoyment, and the tenant's remedy if a defect prevents the agreed use.",
+    "termination": "The grounds on which THIS contract ends or the tenant may be required to vacate, written as terms binding these two parties, with the notice each requires. Do not reproduce the statute's list of grounds as though quoting it.",
+    "dispute_resolution": "The competent court, each party's address for service (الموطن المختار), and notification through الكاتب العدل.",
+    "governing_law": "Name the governing statute explicitly by number and year.",
+    "other": "Execution formalities only: number of copies, that the preamble forms part of the contract, that the contract is an executory instrument (سند تنفيذي), and signature by both parties and witnesses. No legal doctrine.",
+}
+
 
 class GenerationFailed(Exception):
     """No verified law found, or the LLM never produced valid structured
@@ -151,10 +169,26 @@ def _build_prompt(
     contract_type: str, parties: list[dict], property: dict, language: str, context: dict[str, SearchResult]
 ) -> tuple[str, str]:
     excerpts = "\n".join(f"[{label}] {r.content}" for label, r in context.items())
+    notes = "\n".join(f"- {kind}: {DRAFTING_NOTES[kind]}" for kind in CLAUSE_KINDS)
     system = (
-        "You are drafting a legal contract grounded strictly in the excerpts provided. "
-        "Do not invent legal content beyond them. Reply with JSON only, no prose, no markdown fences, "
-        'shaped exactly as: {"clauses": [{"clause_kind": "...", "content": "...", "cites": ["C1"]}]}. '
+        "You draft contracts the way a Palestinian lawyer drafts them: the plain, operative register "
+        "of a عقد إيجار executed before الكاتب العدل, not an academic restatement of the law.\n"
+        "\n"
+        "The excerpts are legal AUTHORITY, not content to reproduce. Never quote, paraphrase or "
+        "restate a rule from them. Write the binding term the rule requires or permits, in the voice "
+        "of the contract, addressing the parties as الطرف الأول and الطرف الثاني — then cite the "
+        "excerpt that authorises it. A clause that says what the law provides, instead of what these "
+        "two parties owe each other, is wrong and will be rejected.\n"
+        "Never cite an excerpt that does not apply to these parties — an excerpt about foreigners, "
+        "sales or taxes has no place in a lease between two Palestinians.\n"
+        "If a clause needs a detail that was not supplied (a date, a term length, a notice period, a "
+        "deposit), write the term with a bracketed blank such as [تاريخ بدء الإجارة] rather than "
+        "inventing a value or padding the clause with legal doctrine.\n"
+        "Keep each clause to what it is for — one clause, one job:\n"
+        f"{notes}\n"
+        "\n"
+        "Do not invent legal content beyond the excerpts. Reply with JSON only, no prose, no markdown "
+        'fences, shaped exactly as: {"clauses": [{"clause_kind": "...", "content": "...", "cites": ["C1"]}]}. '
         f"clause_kind must be one of: {', '.join(CLAUSE_KINDS)}. "
         "Include exactly one clause per kind, in that order. Every clause must cite at least one label "
         "from the excerpts that supports it. Write clause content in "
