@@ -4,7 +4,7 @@ from app.ingestion import detect_language, sha256_checksum
 
 
 def test_sha256_checksum_matches_hashlib():
-    raw = "some legal text".encode("utf-8")
+    raw = b"some legal text"
     assert sha256_checksum(raw) == hashlib.sha256(raw).hexdigest()
     assert len(sha256_checksum(raw)) == 64
 

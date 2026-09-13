@@ -5,13 +5,14 @@ fake, and app.main.generate_contract/get_pool are monkeypatched per test."""
 import asyncio
 import json
 import uuid
+from typing import ClassVar
 
 import pytest
 from fastapi.testclient import TestClient
 
-import app.main as main
-from app.config import settings
+from app import main
 from app.analyze_contract import AnalyzeContractResult, Finding
+from app.config import settings
 from app.generate_contract import Citation, Clause, GenerateContractResult
 from app.security import sign_callback
 
@@ -19,7 +20,7 @@ client = TestClient(main.app)
 
 
 class _CapturingClient:
-    instances: list["_CapturingClient"] = []
+    instances: ClassVar[list["_CapturingClient"]] = []
 
     def __init__(self, *args, **kwargs):
         self.calls: list[dict] = []

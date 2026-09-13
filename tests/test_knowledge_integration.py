@@ -266,7 +266,7 @@ def test_unverified_source_is_never_retrievable():
     returned, even when they are the active version's only content."""
 
     async def scenario():
-        async with _sandbox() as (pool, jurisdiction_id, prefix, verifier_id):
+        async with _sandbox() as (pool, jurisdiction_id, prefix, _verifier_id):
             embedder = FakeEmbeddingProvider(settings.embedding_dimensions)
             document = await _seed_document(pool, jurisdiction_id, prefix, is_verified=False)
 

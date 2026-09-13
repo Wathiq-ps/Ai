@@ -29,8 +29,8 @@ import unicodedata
 import urllib.request
 
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
-NASS = re.compile(r'<div class="nass[^"]*"[^>]*>(.*?)</div>', re.S)
-PARA = re.compile(r"<p\b[^>]*>(.*?)</p>", re.S)
+NASS = re.compile(r'<div class="nass[^"]*"[^>]*>(.*?)</div>', re.DOTALL)
+PARA = re.compile(r"<p\b[^>]*>(.*?)</p>", re.DOTALL)
 TAG = re.compile(r"<[^>]+>")
 # Requires the closing paren: statute markers are always parenthesised in one of
 # `(المادة 34)`, `المادة (1361)`, `(المادة٨٣٩)`, `المادة 42)`, while Hawawini's
@@ -54,7 +54,7 @@ def fetch(page: int) -> str | None:
     req = urllib.request.Request(f"https://shamela.ws/book/8502/{page}", headers={"User-Agent": UA})
     try:
         body = urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "replace")
-    except Exception as exc:
+    except Exception as exc:  # scraper skips any bad page and continues
         print(f"page {page}: {exc}", file=sys.stderr)
         return None
     found = NASS.search(body)

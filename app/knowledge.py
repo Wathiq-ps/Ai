@@ -135,7 +135,7 @@ async def rebuild_kb_version(
                             doc.effective_to,
                             _to_jsonb(chunk.metadata),
                         )
-                        for chunk, vector in zip(chunks, vectors)
+                        for chunk, vector in zip(chunks, vectors, strict=True)
                     ],
                 )
 
