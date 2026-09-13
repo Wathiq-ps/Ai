@@ -6,6 +6,16 @@ from openai import AsyncOpenAI
 from app.providers.base import EmbeddingProvider, LLMProvider
 
 
+class LLMOutputTruncated(Exception):
+    """The model ran out of token budget before finishing — raising beats
+    handing back a half-written reply for a parser to misdiagnose."""
+
+
+def _reasoning_tokens(response) -> int | str:
+    details = getattr(response.usage, "completion_tokens_details", None)
+    return getattr(details, "reasoning_tokens", None) or "?"
+
+
 class OpenAICompatibleLLMProvider(LLMProvider):
     """Works against any OpenAI-Chat-Completions-compatible endpoint —
     OpenRouter today (deepseek/deepseek-v4-pro), swap base_url/model to change."""
@@ -30,11 +40,22 @@ class OpenAICompatibleLLMProvider(LLMProvider):
             ],
             **kwargs,
         )
+        # `max_tokens` on a reasoning model budgets reasoning *and* output, so
+        # a tight cap burns the whole allowance on reasoning and returns empty
+        # or half-written content with finish_reason='length'. Retrying that at
+        # the same cap can only fail again, and "not valid JSON" sends whoever
+        # reads the log looking at the parser — so say what actually happened.
+        choice = response.choices[0]
+        if choice.finish_reason == "length":
+            raise LLMOutputTruncated(
+                f"{self._model} hit the {max_tokens}-token cap "
+                f"(reasoning alone used {_reasoning_tokens(response)}) before finishing its reply"
+            )
         # ponytail: DeepSeek's json_object mode has a known issue where it
         # occasionally returns empty content instead of raising — callers
         # that json_mode=True must treat "" as an invalid/retryable result,
         # not assume a non-exception response is usable.
-        return response.choices[0].message.content or ""
+        return choice.message.content or ""
 
 
 class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):

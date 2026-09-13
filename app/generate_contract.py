@@ -111,7 +111,7 @@ async def generate_contract(
     last_error = ""
     for _ in range(MAX_ATTEMPTS):
         prompt = user if not last_error else f"{user}\n\nYour last reply was invalid: {last_error}. Reply with corrected JSON only."
-        raw = await llm.chat(system, prompt, json_mode=True, max_tokens=4096)
+        raw = await llm.chat(system, prompt, json_mode=True, max_tokens=16384)
         try:
             clauses, citations = _parse_and_ground(raw, context)
         except _InvalidDraft as exc:
