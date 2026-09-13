@@ -155,3 +155,53 @@ def test_generate_contract_fails_closed_after_max_attempts(monkeypatch):
                 property={"address": "Gaza"},
             )
         )
+
+
+def test_generate_contract_scopes_retrieval_to_the_contract_law_plus_general(monkeypatch):
+    """A lease must not be grounded in the foreigners-ownership or tax statutes.
+    Regression: before CONTRACT_LAW_TYPES, generate passed no law_type at all
+    and a rent draft cited قانون ... من الأجانب رقم (40) لسنة 1953."""
+    seen: list = []
+
+    async def _recording_search(pool, embedder, **kwargs):
+        seen.append(kwargs["law_type"])
+        return [_result(1)]
+
+    monkeypatch.setattr(gc, "search", _recording_search)
+
+    class _LLM:
+        async def chat(self, system, user, *, json_mode=False, max_tokens=None):
+            return _full_draft_json({}, "C1")
+
+    asyncio.run(
+        generate_contract(
+            None, _LLM(), None, jurisdiction_id=JURISDICTION_ID, contract_type="rent",
+            parties=[{"role": "landlord", "name": "A"}], property={"address": "X"},
+        )
+    )
+
+    assert seen, "no retrieval happened"
+    assert all(lt == ["rent", "general"] for lt in seen)
+
+
+def test_generate_contract_falls_back_to_general_for_an_unknown_contract_type(monkeypatch):
+    seen: list = []
+
+    async def _recording_search(pool, embedder, **kwargs):
+        seen.append(kwargs["law_type"])
+        return [_result(1)]
+
+    monkeypatch.setattr(gc, "search", _recording_search)
+
+    class _LLM:
+        async def chat(self, system, user, *, json_mode=False, max_tokens=None):
+            return _full_draft_json({}, "C1")
+
+    asyncio.run(
+        generate_contract(
+            None, _LLM(), None, jurisdiction_id=JURISDICTION_ID, contract_type="barter",
+            parties=[{"role": "a", "name": "A"}], property={"address": "X"},
+        )
+    )
+
+    assert all(lt == ["general"] for lt in seen)

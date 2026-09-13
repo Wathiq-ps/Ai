@@ -47,6 +47,14 @@ CLAUSE_TOPICS = {
 
 MAX_ATTEMPTS = 3
 
+# A contract is governed by its own subject-matter law plus the `general`
+# layer (the Mejelle). Without this filter a rent draft happily cites the
+# foreigners-ownership law at whatever the embedder ranks highest.
+CONTRACT_LAW_TYPES = {
+    "rent": ["rent", "general"],
+    "sale": ["sale", "ownership", "general"],
+}
+
 
 class GenerationFailed(Exception):
     """No verified law found, or the LLM never produced valid structured
@@ -125,10 +133,14 @@ async def _retrieve_context(
 ) -> dict[str, SearchResult]:
     """One retrieval per clause topic, deduplicated by chunk_id, labeled `C1..Cn`."""
     property_desc = " ".join(str(v) for v in property.values())
+    law_types = CONTRACT_LAW_TYPES.get(contract_type, ["general"])
     context: dict[str, SearchResult] = {}
     for topic in CLAUSE_TOPICS.values():
         query = f"{contract_type} contract: {topic}. {property_desc}"
-        results = await search(pool, embedder, jurisdiction_id=jurisdiction_id, query=query, k=k_per_clause)
+        results = await search(
+            pool, embedder, jurisdiction_id=jurisdiction_id, query=query,
+            law_type=law_types, k=k_per_clause,
+        )
         for result in results:
             context.setdefault(str(result.chunk_id), result)
 

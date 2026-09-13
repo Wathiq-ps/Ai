@@ -3,6 +3,7 @@
 
 import json
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 
@@ -184,7 +185,7 @@ async def search(
     *,
     jurisdiction_id: uuid.UUID,
     query: str,
-    law_type: str | None = None,
+    law_type: str | Sequence[str] | None = None,
     k: int = 10,
     min_score: float = 0.0,
 ) -> list[SearchResult]:
@@ -217,7 +218,7 @@ async def search(
                   and s.is_verified
                   and c.effective_from <= current_date
                   and (c.effective_to is null or c.effective_to > current_date)
-                  and ($3::app.law_type is null or c.law_type = $3::app.law_type)
+                  and ($3::app.law_type[] is null or c.law_type = any($3::app.law_type[]))
             ) scored
             where score >= $5
             order by score desc
@@ -225,7 +226,9 @@ async def search(
             """,
             query_vector,
             jurisdiction_id,
-            law_type,
+            # One value or several: a contract is governed by its own law_type
+            # plus the `general` layer, so callers pass a list.
+            [law_type] if isinstance(law_type, str) else law_type,
             k,
             min_score,
         )
