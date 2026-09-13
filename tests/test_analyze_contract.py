@@ -156,3 +156,40 @@ def test_analyze_contract_gives_up_after_max_attempts(monkeypatch):
 
     with pytest.raises(AnalysisFailed):
         _run(llm, monkeypatch, [_result(1)])
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("description", "وفق C1(هـ) لا يجوز الإخلاء."),
+        ("description", "تعالج المادة C3 الأمر."),
+        ("title_ar", "مخالفة C2"),
+        ("title_en", "Conflicts with C12"),
+        ("suggested_text", "See C4 for the wording."),
+    ],
+)
+def test_parse_and_ground_rejects_internal_labels_leaking_into_prose(field, value):
+    """`C3` is a retrieval label, meaningless to the lawyer reading the report.
+    A live run leaked them into descriptions ("وفق C1(هـ)"), so the parser
+    rejects and lets the repair loop rewrite — the same treatment an ungrounded
+    citation gets."""
+    context = {"C1": _result(1)}
+
+    with pytest.raises(_InvalidAnalysis, match="internal excerpt label"):
+        _parse_and_ground(_analysis_json([_finding(**{field: value})]), context)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "المادة (4) تمنع الإخلاء دون حكم.",       # article numbers are the right way to refer
+        "Clause C-1 of the annex is unaffected.",  # not a bare label
+        "الحد الأقصى 100 CFA.",                    # letter+digits, but not a label
+    ],
+)
+def test_parse_and_ground_allows_prose_that_merely_looks_label_ish(value):
+    context = {"C1": _result(1)}
+
+    findings, _, _ = _parse_and_ground(_analysis_json([_finding(description=value)]), context)
+
+    assert findings[0].description == value

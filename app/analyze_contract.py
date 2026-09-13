@@ -13,10 +13,17 @@ findings always produce the same number (open decision #5).
 """
 
 import json
+import re
 import uuid
 from dataclasses import dataclass
 
-from app.generate_contract import CLAUSE_KINDS, CLAUSE_TOPICS, MAX_ATTEMPTS, Citation
+from app.generate_contract import (
+    CLAUSE_KINDS,
+    CLAUSE_TOPICS,
+    CONTRACT_LAW_TYPES,
+    MAX_ATTEMPTS,
+    Citation,
+)
 from app.knowledge import SearchResult, search
 from app.providers.base import EmbeddingProvider, LLMProvider
 
@@ -105,6 +112,11 @@ class _InvalidAnalysis(Exception):
     pass
 
 
+# A bare C-label in prose (C1, C12) — but not a word that merely starts with C,
+# and not "C1" inside a longer token.
+_LABEL_IN_PROSE = re.compile(r"(?<![A-Za-z0-9])C\d+(?![A-Za-z0-9])")
+
+
 def risk_score(findings: list[Finding]) -> int:
     """0-100, severity-weighted, capped. Deterministic — no model involved."""
     return min(100, sum(SEVERITY_WEIGHTS[f.severity] for f in findings))
@@ -130,10 +142,14 @@ async def _retrieve_context(
     # long contracts turns out to be poor.
     seed = content[:2000]
     prefix = f"{contract_type} contract" if contract_type else "contract"
+    law_types = CONTRACT_LAW_TYPES.get(contract_type, ["general"]) if contract_type else None
     context: dict[str, SearchResult] = {}
     for topic in CLAUSE_TOPICS.values():
         query = f"{prefix}: {topic}. {seed}"
-        results = await search(pool, embedder, jurisdiction_id=jurisdiction_id, query=query, k=k_per_topic)
+        results = await search(
+            pool, embedder, jurisdiction_id=jurisdiction_id, query=query,
+            law_type=law_types, k=k_per_topic,
+        )
         for result in results:
             context.setdefault(str(result.chunk_id), result)
 
@@ -149,9 +165,22 @@ def _build_prompt(content: str, contract_type: str | None, context: dict[str, Se
         '[{"kind": "...", "severity": "...", "title_ar": "...", "title_en": "...", '
         '"description": "...", "suggested_text": "..." or null, "cites": ["C1"], "confidence": 0.8}]}. '
         f"kind must be one of: {', '.join(FINDING_KINDS)}. "
-        f"severity must be one of: {', '.join(SEVERITIES)}. "
+        f"severity must be one of: {', '.join(SEVERITIES)}, judged against these anchors — the "
+        "risk score is computed from them, so apply them literally rather than by feel:\n"
+        "  critical — the contract or the term is void or unenforceable, or it strips a party of a "
+        "protection the statute makes mandatory.\n"
+        "  high — the term conflicts with the law and a court would likely strike or reverse it, or "
+        "something required to enforce the contract at all is absent (parties, property, rent).\n"
+        "  medium — a gap or ambiguity that will cause a dispute but is curable by filling it in "
+        "(an unfilled date, a missing inventory, an unnamed court).\n"
+        "  low — a customary protective term that is advisable but not legally required.\n"
         "Every finding must cite at least one label from the excerpts that grounds it — a finding "
         "you cannot ground in an excerpt must be left out. confidence is 0..1. "
+        "The labels C1, C2 ... are internal plumbing: put them in `cites` and NEVER write them in a "
+        "title, description or suggested_text. A lawyer reading the report has never seen them. "
+        "Refer to law the way the excerpt itself does — by its article number, e.g. المادة (4). "
+        "suggested_text is contract Arabic ready to paste into the contract, using bracketed blanks "
+        "such as [تاريخ بدء الإجارة] for anything the parties must still supply — never dotted lines. "
         f"Check completeness against these clause groups: {', '.join(CLAUSE_KINDS)} — report each "
         "absent or inadequate one as a missing_clause finding with suggested_text. "
         "Also report contradictions with the excerpts (legal_conflict), vague or unenforceable "
@@ -202,6 +231,18 @@ def _ground_finding(entry: object, context: dict[str, SearchResult]) -> Finding:
         value = entry.get(field)
         if not isinstance(value, str) or not value.strip():
             raise _InvalidAnalysis(f"empty {field!r} on a {kind} finding")
+
+    # `C3` is an internal retrieval label, meaningless to the lawyer reading
+    # the report — and it was leaking into descriptions ("وفق C1(هـ)"). Asking
+    # the model not to do it is not enough on its own; reject and let the
+    # repair loop rewrite, the same way an ungrounded citation is rejected.
+    for field in ("title_ar", "title_en", "description", "suggested_text"):
+        value = entry.get(field)
+        if isinstance(value, str) and _LABEL_IN_PROSE.search(value):
+            raise _InvalidAnalysis(
+                f"{field!r} on a {kind} finding names an internal excerpt label; "
+                "cite the article number instead"
+            )
 
     cites = entry.get("cites") or []
     # BR-25: a finding with no grounding is not a finding.
