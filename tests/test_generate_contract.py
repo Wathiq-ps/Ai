@@ -90,9 +90,9 @@ class _ScriptedLLM:
 
 def test_generate_contract_fails_closed_with_no_retrieval(monkeypatch):
     async def _empty_search(*args, **kwargs):
-        return []
+        return [[] for _ in kwargs["queries"]]
 
-    monkeypatch.setattr(gc, "search", _empty_search)
+    monkeypatch.setattr(gc, "search_many", _empty_search)
 
     with pytest.raises(GenerationFailed):
         asyncio.run(
@@ -112,9 +112,9 @@ def test_generate_contract_retries_then_succeeds(monkeypatch):
     seeded = _result(1)
 
     async def _fake_search(*args, **kwargs):
-        return [seeded]
+        return [[seeded] for _ in kwargs["queries"]]
 
-    monkeypatch.setattr(gc, "search", _fake_search)
+    monkeypatch.setattr(gc, "search_many", _fake_search)
 
     llm = _ScriptedLLM(["not json", _full_draft_json({}, "C1")])
 
@@ -137,9 +137,9 @@ def test_generate_contract_retries_then_succeeds(monkeypatch):
 
 def test_generate_contract_fails_closed_after_max_attempts(monkeypatch):
     async def _fake_search(*args, **kwargs):
-        return [_result(1)]
+        return [[_result(1)] for _ in kwargs["queries"]]
 
-    monkeypatch.setattr(gc, "search", _fake_search)
+    monkeypatch.setattr(gc, "search_many", _fake_search)
 
     llm = _ScriptedLLM(["not json"] * gc.MAX_ATTEMPTS)
 
@@ -164,10 +164,10 @@ def test_generate_contract_scopes_retrieval_to_the_contract_law_plus_general(mon
     seen: list = []
 
     async def _recording_search(pool, embedder, **kwargs):
-        seen.append(kwargs["law_type"])
-        return [_result(1)]
+        seen.append(kwargs)
+        return [[_result(1)] for _ in kwargs["queries"]]
 
-    monkeypatch.setattr(gc, "search", _recording_search)
+    monkeypatch.setattr(gc, "search_many", _recording_search)
 
     class _LLM:
         async def chat(self, system, user, *, json_mode=False, max_tokens=None):
@@ -180,18 +180,20 @@ def test_generate_contract_scopes_retrieval_to_the_contract_law_plus_general(mon
         )
     )
 
-    assert seen, "no retrieval happened"
-    assert all(lt == ["rent", "general"] for lt in seen)
+    # One batched call for all 11 clause topics, not 11 sequential ones.
+    assert len(seen) == 1, f"expected one batched retrieval, got {len(seen)}"
+    assert len(seen[0]["queries"]) == len(gc.CLAUSE_TOPICS)
+    assert seen[0]["law_type"] == ["rent", "general"]
 
 
 def test_generate_contract_falls_back_to_general_for_an_unknown_contract_type(monkeypatch):
     seen: list = []
 
     async def _recording_search(pool, embedder, **kwargs):
-        seen.append(kwargs["law_type"])
-        return [_result(1)]
+        seen.append(kwargs)
+        return [[_result(1)] for _ in kwargs["queries"]]
 
-    monkeypatch.setattr(gc, "search", _recording_search)
+    monkeypatch.setattr(gc, "search_many", _recording_search)
 
     class _LLM:
         async def chat(self, system, user, *, json_mode=False, max_tokens=None):
@@ -204,4 +206,4 @@ def test_generate_contract_falls_back_to_general_for_an_unknown_contract_type(mo
         )
     )
 
-    assert all(lt == ["general"] for lt in seen)
+    assert [c["law_type"] for c in seen] == [["general"]]

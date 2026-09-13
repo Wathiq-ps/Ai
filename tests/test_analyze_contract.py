@@ -9,9 +9,12 @@ import app.analyze_contract as ac
 from app.analyze_contract import (
     CLAUSE_KINDS,
     AnalysisFailed,
+    Citation,
+    ClauseCoverage,
     Finding,
     _InvalidAnalysis,
     _parse_and_ground,
+    _vote,
     analyze_contract,
     risk_score,
 )
@@ -134,9 +137,9 @@ class _ScriptedLLM:
 
 def _run(llm, monkeypatch, results):
     async def _fake_search(*args, **kwargs):
-        return results
+        return [results for _ in kwargs["queries"]]
 
-    monkeypatch.setattr(ac, "search", _fake_search)
+    monkeypatch.setattr(ac, "search_many", _fake_search)
     return asyncio.run(
         analyze_contract(
             pool=None,
@@ -208,3 +211,74 @@ def test_parse_and_ground_allows_prose_that_merely_looks_label_ish(value):
     _cov, findings, _, _ = _parse_and_ground(_analysis_json([_finding(description=value)]), context)
 
     assert findings[0].description == value
+
+
+def _cov_entry(kind: str, status: str) -> ClauseCoverage:
+    return ClauseCoverage(clause_kind=kind, status=status, note=f"{status} note", citations=[])
+
+
+def _sample(statuses: dict, findings: list[Finding]) -> tuple:
+    coverage = [_cov_entry(k, statuses.get(k, "present")) for k in CLAUSE_KINDS]
+    return (coverage, findings, "ملخص", "summary")
+
+
+def _judgement(kind: str, article: str) -> Finding:
+    return Finding(
+        kind=kind, severity="medium", title_ar="عنوان", title_en="Title",
+        description="desc", suggested_text=None,
+        citations=[Citation(source_id=uuid.uuid4(), article_ref=article, chunk_id=uuid.uuid4(), excerpt="x")],
+        confidence=0.8,
+    )
+
+
+def test_vote_takes_the_majority_verdict_for_each_clause():
+    samples = [
+        _sample({"duration": "absent"}, []),
+        _sample({"duration": "present"}, []),
+        _sample({"duration": "present"}, []),
+    ]
+
+    coverage, _, _, _ = _vote(samples)
+
+    assert [c.clause_kind for c in coverage] == CLAUSE_KINDS
+    assert next(c for c in coverage if c.clause_kind == "duration").status == "present"
+
+
+def test_vote_breaks_a_tie_toward_the_worse_verdict():
+    """A split decision on a clause must not silently clear it — a legal review
+    should over-report rather than under-report."""
+    samples = [_sample({"price": "absent"}, []), _sample({"price": "present"}, [])]
+
+    coverage, _, _, _ = _vote(samples)
+
+    assert next(c for c in coverage if c.clause_kind == "price").status == "absent"
+
+
+def test_vote_keeps_findings_a_majority_raised_and_drops_one_off_flags():
+    agreed = _judgement("legal_conflict", "المادة (4)")
+    one_off = _judgement("suggestion", "المادة (6)")
+    samples = [
+        _sample({}, [agreed, one_off]),
+        _sample({}, [_judgement("legal_conflict", "المادة (4)")]),
+        _sample({}, [_judgement("legal_conflict", "المادة (4)")]),
+    ]
+
+    _, judgements, _, _ = _vote(samples)
+
+    assert [(f.kind, f.citations[0].article_ref) for f in judgements] == [("legal_conflict", "المادة (4)")]
+
+
+def test_vote_keeps_the_coverage_note_from_a_sample_that_voted_that_way():
+    """The note and citations shown to the reader must come from a sample that
+    actually reached that verdict, not be stitched together from the losers."""
+    samples = [
+        _sample({"warranties": "absent"}, []),
+        _sample({"warranties": "incomplete"}, []),
+        _sample({"warranties": "incomplete"}, []),
+    ]
+
+    coverage, _, _, _ = _vote(samples)
+    warranties = next(c for c in coverage if c.clause_kind == "warranties")
+
+    assert warranties.status == "incomplete"
+    assert warranties.note == "incomplete note"

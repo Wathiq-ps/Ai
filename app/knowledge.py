@@ -193,7 +193,47 @@ async def search(
     `active` kb_version, only `is_verified` sources (BR-24), only chunks
     currently in effect."""
     [query_vector] = await embedder.embed([query])
+    return await _search_vector(
+        pool, query_vector, jurisdiction_id=jurisdiction_id, law_type=law_type, k=k, min_score=min_score
+    )
 
+
+async def search_many(
+    pool: asyncpg.Pool,
+    embedder: EmbeddingProvider,
+    *,
+    jurisdiction_id: uuid.UUID,
+    queries: Sequence[str],
+    law_type: str | Sequence[str] | None = None,
+    k: int = 10,
+    min_score: float = 0.0,
+) -> list[list[SearchResult]]:
+    """Same as `search`, for a fixed set of queries known up front — one
+    embedding request for all of them instead of one per query.
+
+    Both agents fan out over the same 11 clause topics, which was 11 sequential
+    round trips to the embedding API (~9s of an analyze job's ~67s) to compute
+    vectors that never depend on each other. The pgvector queries stay one per
+    query; they are milliseconds against a 1714-chunk index.
+    """
+    vectors = await embedder.embed(list(queries))
+    return [
+        await _search_vector(
+            pool, vector, jurisdiction_id=jurisdiction_id, law_type=law_type, k=k, min_score=min_score
+        )
+        for vector in vectors
+    ]
+
+
+async def _search_vector(
+    pool: asyncpg.Pool,
+    query_vector,
+    *,
+    jurisdiction_id: uuid.UUID,
+    law_type: str | Sequence[str] | None,
+    k: int,
+    min_score: float,
+) -> list[SearchResult]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """

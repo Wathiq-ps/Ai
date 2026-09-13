@@ -20,7 +20,7 @@ import json
 import uuid
 from dataclasses import dataclass
 
-from app.knowledge import SearchResult, search
+from app.knowledge import SearchResult, search_many
 from app.providers.base import EmbeddingProvider, LLMProvider
 
 CLAUSE_KINDS = [
@@ -152,13 +152,12 @@ async def _retrieve_context(
     """One retrieval per clause topic, deduplicated by chunk_id, labeled `C1..Cn`."""
     property_desc = " ".join(str(v) for v in property.values())
     law_types = CONTRACT_LAW_TYPES.get(contract_type, ["general"])
+    queries = [f"{contract_type} contract: {topic}. {property_desc}" for topic in CLAUSE_TOPICS.values()]
     context: dict[str, SearchResult] = {}
-    for topic in CLAUSE_TOPICS.values():
-        query = f"{contract_type} contract: {topic}. {property_desc}"
-        results = await search(
-            pool, embedder, jurisdiction_id=jurisdiction_id, query=query,
-            law_type=law_types, k=k_per_clause,
-        )
+    for results in await search_many(
+        pool, embedder, jurisdiction_id=jurisdiction_id, queries=queries,
+        law_type=law_types, k=k_per_clause,
+    ):
         for result in results:
             context.setdefault(str(result.chunk_id), result)
 

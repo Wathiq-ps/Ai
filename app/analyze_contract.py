@@ -12,9 +12,11 @@ severity-weighted sum over the findings (RISK_RUBRIC_VERSION), so the same
 findings always produce the same number (open decision #5).
 """
 
+import asyncio
 import json
 import re
 import uuid
+from collections import Counter
 from dataclasses import dataclass
 
 from app.generate_contract import (
@@ -24,7 +26,7 @@ from app.generate_contract import (
     MAX_ATTEMPTS,
     Citation,
 )
-from app.knowledge import SearchResult, search
+from app.knowledge import SearchResult, search_many
 from app.providers.base import EmbeddingProvider, LLMProvider
 
 FINDING_KINDS = ["missing_clause", "legal_conflict", "ambiguity", "suggestion", "risk"]
@@ -95,7 +97,25 @@ async def analyze_contract(
     content: str,
     contract_type: str | None = None,
     k_per_topic: int = 5,
+    samples: int = 1,
 ) -> AnalyzeContractResult:
+    """`samples` > 1 runs that many independent analyses over the *same*
+    retrieved excerpts and keeps only what they agree on — self-consistency.
+    One sample's findings are not reproducible (measured: mean pairwise
+    Jaccard 0.48 over four runs, risk_score 35-67 on one contract), and a
+    lawyer re-running a review should not get a different report.
+
+    Measured over four runs of one contract: k=3 lifts mean pairwise Jaccard
+    0.48 -> 0.58 and the findings present in every run from 2 to 4, and
+    narrows risk_score from 35-67 to 48-67. It helps; it does not make the
+    report reproducible.
+
+    Costs `samples` times the tokens, and — despite asyncio.gather — roughly
+    twice the wall clock, not the same: the endpoint serialises concurrent
+    requests on one key, so k=3 measured 115-134s against a 60s budget
+    (NFR-1.1). That is why the default is 1. Do not raise it without either a
+    higher budget or a provider that really runs these in parallel.
+    """
     context = await _retrieve_context(
         pool, embedder, jurisdiction_id=jurisdiction_id, contract_type=contract_type,
         content=content, k_per_topic=k_per_topic,
@@ -108,26 +128,84 @@ async def analyze_contract(
 
     system, user = _build_prompt(content, contract_type, context)
 
+    # Every sample sees the same excerpts and the same labels, so a `C3` in one
+    # sample means what it means in every other — that is what makes the votes
+    # below comparable.
+    results = await asyncio.gather(
+        *(_one_analysis(llm, system, user, context) for _ in range(samples)),
+        return_exceptions=True,
+    )
+    usable = [r for r in results if not isinstance(r, BaseException)]
+    if not usable:
+        raise AnalysisFailed(f"no sample produced valid structured output: {results[0]}")
+
+    coverage, judgements, summary_ar, summary_en = _vote(usable)
+    findings = [_coverage_finding(c) for c in coverage if c.status != "present"] + judgements
+    return AnalyzeContractResult(
+        coverage=coverage,
+        findings=findings,
+        risk_score=risk_score(findings),
+        summary_ar=summary_ar,
+        summary_en=summary_en,
+        confidence=_overall_confidence(findings),
+        kb_version_id=kb_version_id,
+    )
+
+
+async def _one_analysis(llm, system: str, user: str, context: dict[str, SearchResult]):
+    """One sample, with its own bounded JSON-repair loop."""
     last_error = ""
     for _ in range(MAX_ATTEMPTS):
         prompt = user if not last_error else f"{user}\n\nYour last reply was invalid: {last_error}. Reply with corrected JSON only."
         raw = await llm.chat(system, prompt, json_mode=True, max_tokens=16384)
         try:
-            coverage, findings, summary_ar, summary_en = _parse_and_ground(raw, context)
+            return _parse_and_ground(raw, context)
         except _InvalidAnalysis as exc:
             last_error = str(exc)
-            continue
-        return AnalyzeContractResult(
-            coverage=coverage,
-            findings=findings,
-            risk_score=risk_score(findings),
-            summary_ar=summary_ar,
-            summary_en=summary_en,
-            confidence=_overall_confidence(findings),
-            kb_version_id=kb_version_id,
-        )
-
     raise AnalysisFailed(f"LLM never produced valid structured output: {last_error}")
+
+
+# Worst-first, so a tied vote on a clause fails safe rather than silently
+# clearing it: a legal review should over-report, not under-report.
+_STATUS_RANK = {"absent": 0, "incomplete": 1, "present": 2}
+
+
+def _finding_key(f: Finding) -> tuple:
+    """What a finding is *about* — findings carry no id, and two samples will
+    word the same problem differently, so identity is its kind plus the
+    articles it rests on."""
+    return (f.kind, tuple(sorted(c.article_ref or "?" for c in f.citations)))
+
+
+def _vote(samples: list[tuple]) -> tuple[list[ClauseCoverage], list[Finding], str, str]:
+    """Majority across samples. Coverage is voted per clause kind (the
+    checklist guarantees every sample has an opinion on every one). Judgement
+    findings are kept when at least half the samples raise them, which is what
+    drops the one-off flags that made the report unstable."""
+    n = len(samples)
+    threshold = (n + 1) // 2
+
+    coverage = []
+    for i, kind in enumerate(CLAUSE_KINDS):
+        verdicts = [s[0][i] for s in samples]
+        counts = Counter(v.status for v in verdicts)
+        top = max(counts.values())
+        status = min((s for s, c in counts.items() if c == top), key=_STATUS_RANK.__getitem__)
+        # Keep a real note and real citations: take them from a sample that
+        # actually voted this way, not a synthesised summary of the vote.
+        coverage.append(next(v for v in verdicts if v.status == status))
+        assert coverage[-1].clause_kind == kind
+
+    seen: Counter = Counter()
+    first: dict[tuple, Finding] = {}
+    for _cov, findings, _, _ in samples:
+        for key in {_finding_key(f) for f in findings}:
+            seen[key] += 1
+        for f in findings:
+            first.setdefault(_finding_key(f), f)
+
+    judgements = [f for key, f in first.items() if seen[key] >= threshold]
+    return coverage, judgements, samples[0][2], samples[0][3]
 
 
 class _InvalidAnalysis(Exception):
@@ -165,13 +243,12 @@ async def _retrieve_context(
     seed = content[:2000]
     prefix = f"{contract_type} contract" if contract_type else "contract"
     law_types = CONTRACT_LAW_TYPES.get(contract_type, ["general"]) if contract_type else None
+    queries = [f"{prefix}: {topic}. {seed}" for topic in CLAUSE_TOPICS.values()]
     context: dict[str, SearchResult] = {}
-    for topic in CLAUSE_TOPICS.values():
-        query = f"{prefix}: {topic}. {seed}"
-        results = await search(
-            pool, embedder, jurisdiction_id=jurisdiction_id, query=query,
-            law_type=law_types, k=k_per_topic,
-        )
+    for results in await search_many(
+        pool, embedder, jurisdiction_id=jurisdiction_id, queries=queries,
+        law_type=law_types, k=k_per_topic,
+    ):
         for result in results:
             context.setdefault(str(result.chunk_id), result)
 
@@ -249,11 +326,6 @@ def _parse_and_ground(
     if any(f.kind == "missing_clause" for f in findings):
         raise _InvalidAnalysis("missing_clause belongs in 'coverage', not 'findings'")
 
-    # Derived, not asked for: a non-`present` checklist verdict *is* a
-    # missing_clause finding, at a severity this code assigns. Emitting them
-    # into findings[] keeps the wire contract Laravel already has, while the
-    # checklist is what makes the set reproducible.
-    findings = [_coverage_finding(c) for c in coverage if c.status != "present"] + findings
     return coverage, findings, summary_ar.strip(), summary_en.strip()
 
 

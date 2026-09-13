@@ -82,10 +82,16 @@ model. Severity on the other kinds is the model's.
 Analysing the same contract twice does **not** give the same findings. Measured
 over four runs of the same contract:
 
-| | mean pairwise Jaccard | `risk_score` range |
-|---|---|---|
-| before the checklist | 0.36 | 43–70 |
-| with the checklist | 0.48 | 35–67 |
+| | mean pairwise Jaccard | `risk_score` range | findings in every run |
+|---|---|---|---|
+| before the checklist | 0.36 | 43–70 | 2 of 11 |
+| with the checklist | 0.48 | 35–67 | 2 of 10 |
+| checklist + 3-sample vote | 0.58 | 48–67 | 4 of 11 |
+
+The 3-sample vote is **off by default**: it costs 3x the tokens and ~2x the
+wall clock (115-134s measured, against a 60s budget), because the endpoint
+serialises concurrent requests. Assume single-sample behaviour unless told
+otherwise.
 
 The checklist fixes the *cardinality* of the completeness half — all 11
 verdicts are always present, and their severities are assigned by this service
