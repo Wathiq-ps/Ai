@@ -13,6 +13,7 @@ findings always produce the same number (open decision #5).
 """
 
 import asyncio
+import hashlib
 import json
 import re
 import uuid
@@ -88,6 +89,24 @@ class AnalyzeContractResult:
     kb_version_id: uuid.UUID
 
 
+# The literal "run it twice live" demo risk: BACKEND_INTEGRATION.md already
+# tells Laravel to store an analysis and never re-run for the same contract,
+# but Laravel has nowhere to store one yet (Sprint 7, on hold). Until it does,
+# an identical request returns the identical report from here instead of a
+# fresh, differently-sampled one — same stopgap as generate_contract's cache,
+# same capacity reasoning.
+_CACHE_CAPACITY = 64
+_analysis_cache: dict[tuple, AnalyzeContractResult] = {}
+
+
+def _analysis_cache_key(
+    jurisdiction_id: uuid.UUID, content: str, contract_type: str | None,
+    k_per_topic: int, samples: int,
+) -> tuple:
+    digest = hashlib.sha256(content.encode()).hexdigest()
+    return (jurisdiction_id, digest, contract_type, k_per_topic, samples)
+
+
 async def analyze_contract(
     pool,
     llm: LLMProvider,
@@ -116,6 +135,10 @@ async def analyze_contract(
     (NFR-1.1). That is why the default is 1. Do not raise it without either a
     higher budget or a provider that really runs these in parallel.
     """
+    cache_key = _analysis_cache_key(jurisdiction_id, content, contract_type, k_per_topic, samples)
+    if cache_key in _analysis_cache:
+        return _analysis_cache[cache_key]
+
     context = await _retrieve_context(
         pool, embedder, jurisdiction_id=jurisdiction_id, contract_type=contract_type,
         content=content, k_per_topic=k_per_topic,
@@ -141,7 +164,7 @@ async def analyze_contract(
 
     coverage, judgements, summary_ar, summary_en = _vote(usable)
     findings = [_coverage_finding(c) for c in coverage if c.status != "present"] + judgements
-    return AnalyzeContractResult(
+    result = AnalyzeContractResult(
         coverage=coverage,
         findings=findings,
         risk_score=risk_score(findings),
@@ -150,6 +173,10 @@ async def analyze_contract(
         confidence=_overall_confidence(findings),
         kb_version_id=kb_version_id,
     )
+    if len(_analysis_cache) >= _CACHE_CAPACITY:
+        _analysis_cache.pop(next(iter(_analysis_cache)))
+    _analysis_cache[cache_key] = result
+    return result
 
 
 async def _one_analysis(llm, system: str, user: str, context: dict[str, SearchResult]):

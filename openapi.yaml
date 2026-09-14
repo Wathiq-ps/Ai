@@ -144,6 +144,23 @@ components:
         content:
           type: string
           description: Full contract text/body to analyze.
+        contract_type:
+          type: string
+          description: >-
+            Optional. Scopes law retrieval to this contract's own law plus
+            the general layer (e.g. "rent" -> rent+general). Omitted or
+            unrecognized falls back to the general layer only.
+        samples:
+          type: integer
+          minimum: 1
+          maximum: 3
+          default: 1
+          description: >-
+            Optional self-consistency vote size. >1 runs that many analyses
+            over the same retrieved excerpts and keeps what they agree on —
+            real stability gain, ~2x wall clock, so use only for a specific
+            job you know can afford it, not general traffic. See
+            BACKEND_INTEGRATION.md's Reproducibility section.
 
     JobCallback:
       type: object

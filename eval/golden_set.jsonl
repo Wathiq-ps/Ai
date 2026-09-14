@@ -13,3 +13,8 @@
 {"id": "tax-assessment-basis", "question": "ما أساس احتساب الضريبة وأصول التخمين؟", "law_type": "tax", "articles": ["المادة (7)"]}
 {"id": "tax-objection", "question": "كيف يعترض المكلف على قائمة التخمين؟", "law_type": "tax", "articles": ["المادة (9)"]}
 {"id": "tax-appeal", "question": "كيف يستأنف المكلف على قائمة التخمين؟", "law_type": "tax", "articles": ["المادة (10)"]}
+{"id": "crosslaw-rent-eviction", "question": "متى يجوز للمحكمة أن تحكم بإخلاء المستأجر من العقار؟", "articles": ["المادة (4)"]}
+{"id": "crosslaw-foreign-lease-permit", "question": "هل يحتاج غير الفلسطيني إلى إذن لاستئجار أموال غير منقولة؟", "articles": ["المادة (2)"]}
+{"id": "crosslaw-tax-liability", "question": "على من تقع ضريبة الأبنية والأراضي؟", "articles": ["المادة (11)"]}
+{"id": "crosslaw-ijara-formation", "question": "كيف تنعقد الإجارة بالإيجاب والقبول؟", "articles": ["المادة (433)"]}
+{"id": "crosslaw-ijara-shared-ownership", "question": "هل يفسد عقد الإجارة إذا ظهر شريك في العين المؤجرة بعد العقد؟", "articles": ["المادة (430)"]}

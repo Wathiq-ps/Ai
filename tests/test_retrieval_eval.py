@@ -50,3 +50,14 @@ def test_shipped_golden_set_loads_and_is_well_formed():
     assert len(queries) >= 10
     assert all(q.question.strip() and q.articles for q in queries)
     assert len({q.id for q in queries}) == len(queries)
+
+
+def test_shipped_golden_set_has_cross_law_queries():
+    """Every original entry pre-filters to its own law_type, which only tests
+    'find the right article in one law' — not 'pick the right law' at all.
+    `law_type: None` entries run unfiltered, the way a real query would."""
+    queries = load_golden_set()
+
+    cross_law = [q for q in queries if q.law_type is None]
+    assert cross_law, "golden set has no unfiltered (cross-law) queries"
+    assert {q.law_type for q in queries} >= {"rent", "tax", "ownership", None}

@@ -10,9 +10,11 @@ deliberately does not need.
 
     WATHIQ_DB_TESTS=1 uv run pytest tests/test_generate_contract_live.py
 
-Today's corpus is thin (a handful of seed articles, see
-SPRINT4_NEXT_STEPS.md item 6, still open) — this only asserts structural
-correctness (all clause kinds present, real citations), not draft quality.
+The corpus is the real one (`real-corpus-v1`: Mejelle + the three West Bank
+property/tax statutes, 1714 chunks — see app/retrieval_eval.py) but this
+still only asserts structural correctness (all clause kinds present, real
+citations), not draft quality — that's what eval/golden_set.jsonl and a human
+read of the output are for.
 """
 
 import os

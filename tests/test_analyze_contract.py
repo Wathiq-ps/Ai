@@ -169,6 +169,21 @@ def test_analyze_contract_retries_then_succeeds(monkeypatch):
     assert all(f.citations for f in result.findings)
 
 
+def test_analyze_contract_is_idempotent_for_the_same_input(monkeypatch):
+    """The live-demo risk this guards against: re-analysing the same contract
+    must not silently roll new dice and hand back a different risk_score. A
+    second call with identical inputs must not touch the LLM again — if it
+    did, this second reply ("not json") would make it fail closed."""
+    seeded = _result(1)
+    llm = _ScriptedLLM([_analysis_json([_finding()]), "not json"])
+
+    first = _run(llm, monkeypatch, [seeded])
+    second = _run(llm, monkeypatch, [seeded])
+
+    assert second is first
+    assert second.risk_score == first.risk_score
+
+
 def test_analyze_contract_gives_up_after_max_attempts(monkeypatch):
     llm = _ScriptedLLM(["not json"] * ac.MAX_ATTEMPTS)
 

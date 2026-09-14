@@ -114,6 +114,21 @@ Practical consequences for you:
 - A risk score is comparable only against the same `risk_rubric_version`
   **and** the same `kb_version_id`.
 
+Until you have somewhere of your own to store a result (Sprint 7), the AI
+service covers the gap: submitting the exact same `(jurisdiction_id,
+contract_type, content, samples)` again returns the exact same report from an
+in-process cache, no new sampling involved — see `_analysis_cache` in
+`app/analyze_contract.py`. This makes "run it again live" safe for a demo, but
+it is **not** a substitute for real storage: it's per-process (an AI-service
+restart clears it) and per-worker if this ever runs more than one. Build your
+own store per the bullet above once Sprint 7 starts; don't depend on this
+staying around.
+
+`analyze_contract`'s job payload also accepts an optional `"samples"` integer
+(1-3, default 1) to opt a specific request into the 3-sample vote above — pick
+this for a contract you know needs to look extra solid live and can afford
+~2x the wall clock, not for general traffic (see NFR-1.1 in *Failure modes*).
+
 ## `generate_contract`
 
 `body` is `clauses[]` joined by blank lines, in a fixed order — it is derived,

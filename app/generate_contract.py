@@ -16,6 +16,7 @@ retrieved — a scrambled UUID in the model's output can't forge a citation.
 than asked of the model separately, so the two can never drift apart.
 """
 
+import hashlib
 import json
 import uuid
 from dataclasses import dataclass
@@ -67,7 +68,7 @@ DRAFTING_NOTES = {
     "duration": "State the start date, the end date, and what happens at expiry (renewal or vacancy). Use bracketed blanks for any date not supplied.",
     "obligations": "A numbered list of what each party must and must not do — upkeep, subletting, lawful use, returning the property as received.",
     "warranties": "The landlord's warranty of title and of quiet enjoyment, and the tenant's remedy if a defect prevents the agreed use.",
-    "termination": "The grounds on which THIS contract ends or the tenant may be required to vacate, written as terms binding these two parties, with the notice each requires. Do not reproduce the statute's list of grounds as though quoting it.",
+    "termination": "State plainly when this contract ends: at the term's expiry, and on the tenant's breach of an obligation this contract itself imposes (rent, upkeep, lawful use) after notice. Two or three sentences, not a list — do not enumerate the statute's repossession grounds one by one, even paraphrased; that is the law's content, not a term of this contract.",
     "dispute_resolution": "The competent court, each party's address for service (الموطن المختار), and notification through الكاتب العدل.",
     "governing_law": "Name the governing statute explicitly by number and year.",
     "other": "Execution formalities only: number of copies, that the preamble forms part of the contract, that the contract is an executory instrument (سند تنفيذي), and signature by both parties and witnesses. No legal doctrine.",
@@ -101,6 +102,27 @@ class GenerateContractResult:
     kb_version_id: uuid.UUID
 
 
+# Re-running the *same* draft request should not be a fresh roll of the dice —
+# BACKEND_INTEGRATION.md already tells Laravel "store the result, don't
+# re-run", but Laravel has nothing to store into yet (Sprint 7, on hold). This
+# is the stopgap until it does: identical inputs return the identical draft,
+# in-process, no extra tokens spent. Unbounded key space is fine at demo
+# scale; capped so a long-running process can't grow this forever.
+_CACHE_CAPACITY = 64
+_draft_cache: dict[tuple, GenerateContractResult] = {}
+
+
+def _draft_cache_key(
+    jurisdiction_id: uuid.UUID, contract_type: str, parties: list[dict],
+    property: dict, language: str, k_per_clause: int,
+) -> tuple:
+    payload = json.dumps(
+        {"parties": parties, "property": property}, sort_keys=True, ensure_ascii=False
+    )
+    digest = hashlib.sha256(payload.encode()).hexdigest()
+    return (jurisdiction_id, contract_type, digest, language, k_per_clause)
+
+
 async def generate_contract(
     pool,
     llm: LLMProvider,
@@ -113,6 +135,12 @@ async def generate_contract(
     language: str = "ar",
     k_per_clause: int = 5,
 ) -> GenerateContractResult:
+    cache_key = _draft_cache_key(
+        jurisdiction_id, contract_type, parties, property, language, k_per_clause
+    )
+    if cache_key in _draft_cache:
+        return _draft_cache[cache_key]
+
     context = await _retrieve_context(
         pool, embedder, jurisdiction_id=jurisdiction_id, contract_type=contract_type,
         property=property, k_per_clause=k_per_clause,
@@ -136,7 +164,11 @@ async def generate_contract(
             last_error = str(exc)
             continue
         body = "\n\n".join(c.content for c in clauses)
-        return GenerateContractResult(body=body, clauses=clauses, citations=citations, kb_version_id=kb_version_id)
+        result = GenerateContractResult(body=body, clauses=clauses, citations=citations, kb_version_id=kb_version_id)
+        if len(_draft_cache) >= _CACHE_CAPACITY:
+            _draft_cache.pop(next(iter(_draft_cache)))
+        _draft_cache[cache_key] = result
+        return result
 
     raise GenerationFailed(f"LLM never produced valid structured output: {last_error}")
 

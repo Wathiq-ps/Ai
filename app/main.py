@@ -145,6 +145,13 @@ async def _run_analyze_contract(job: JobRequest) -> None:
         payload = job.payload
         if not payload.get("content"):
             raise AnalysisFailed("payload missing required field: content")
+        # Opt-in only: self-consistency voting (samples>1) buys real stability
+        # (mean pairwise Jaccard 0.48->0.58 measured) at ~2x wall clock against
+        # the 60s budget (NFR-1.1), so the default stays 1. A caller that knows
+        # a given job can afford the extra time — a demo contract prepared in
+        # advance, not general traffic — can ask for it explicitly. Clamped so
+        # a stray large value can't blow the timeout even further.
+        samples = max(1, min(3, int(payload.get("samples", 1))))
         pool = await get_pool()
         result = await asyncio.wait_for(
             analyze_contract(
@@ -154,6 +161,7 @@ async def _run_analyze_contract(job: JobRequest) -> None:
                 jurisdiction_id=job.jurisdiction_id,
                 content=payload["content"],
                 contract_type=payload.get("contract_type"),
+                samples=samples,
             ),
             timeout=settings.job_timeout_seconds,
         )

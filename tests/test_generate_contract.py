@@ -135,6 +135,27 @@ def test_generate_contract_retries_then_succeeds(monkeypatch):
     assert result.body  # assembled from clause contents
 
 
+def test_generate_contract_is_idempotent_for_the_same_input(monkeypatch):
+    """Re-drafting the same request must not touch the LLM again — if it did,
+    this second scripted reply ("not json") would make it fail closed."""
+    seeded = _result(1)
+
+    async def _fake_search(*args, **kwargs):
+        return [[seeded] for _ in kwargs["queries"]]
+
+    monkeypatch.setattr(gc, "search_many", _fake_search)
+    llm = _ScriptedLLM([_full_draft_json({}, "C1"), "not json"])
+
+    kwargs = dict(
+        pool=None, llm=llm, embedder=None, jurisdiction_id=JURISDICTION_ID,
+        contract_type="sale", parties=[{"name": "A"}], property={"address": "Gaza"},
+    )
+    first = asyncio.run(generate_contract(**kwargs))
+    second = asyncio.run(generate_contract(**kwargs))
+
+    assert second is first
+
+
 def test_generate_contract_fails_closed_after_max_attempts(monkeypatch):
     async def _fake_search(*args, **kwargs):
         return [[_result(1)] for _ in kwargs["queries"]]
