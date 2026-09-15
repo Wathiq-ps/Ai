@@ -66,7 +66,9 @@ kind, including clauses that are fine.
 `findings[]` is the problem list. Every `coverage` entry whose status is not
 `present` is **also** emitted there as a `missing_clause` finding, followed by
 the model's judgement findings (`legal_conflict`, `ambiguity`, `suggestion`,
-`risk`).
+`risk`). Every finding carries a `clause_kind` saying which of the 11 clauses
+it concerns (`other` = the contract as a whole), so a review UI can show a
+judgement beside the clause it is about.
 
 So: **read `findings[]` to show problems. Read `coverage[]` to show what was
 checked.** A review UI that only lists findings cannot tell a lawyer "the
@@ -77,10 +79,31 @@ Severity on a `missing_clause` finding is assigned by *this service* from the
 coverage status (`absent` → high, `incomplete` → medium), not judged by the
 model. Severity on the other kinds is the model's.
 
+`citations` on a `coverage` entry **can be empty, on any status.** A missing
+clause is measured against this service's 11-clause checklist, not against a
+statute that demands it — there is often no article that says a lease must
+carry a termination clause, and demanding one only made the model invent a
+citation or fail validation. Judgement findings are the claims about law, and
+those still always cite (BR-25). A review UI must render an uncited coverage
+entry, not treat it as malformed.
+
+`risk_score` is two halves that cannot drown each other out: completeness —
+the share of the checklist that is `absent` (weight 1) or `incomplete`
+(weight 0.5), worth at most 55 — plus the judgement findings by severity,
+worth at most 45. This is `risk-v2`. Under `risk-v1` (a plain severity sum
+over all findings) every flawed contract scored exactly 100, because the
+11-clause checklist alone overflows the cap; scores from the two rubrics are
+not comparable.
+
+`confidence` is the mean over the model's judgement findings only. Checklist
+findings carry 1.0 by construction, so averaging them in pulled every report
+to ~0.98. A contract with no judgement findings reports 1.0.
+
 ### Reproducibility — read this before building anything that compares runs
 
 Analysing the same contract twice does **not** give the same findings. Measured
-over four runs of the same contract:
+over four runs of the same contract, on `deepseek-v4-pro` under the `risk-v1`
+rubric:
 
 | | mean pairwise Jaccard | `risk_score` range | findings in every run |
 |---|---|---|---|
@@ -88,10 +111,19 @@ over four runs of the same contract:
 | with the checklist | 0.48 | 35–67 | 2 of 10 |
 | checklist + 3-sample vote | 0.58 | 48–67 | 4 of 11 |
 
-The 3-sample vote is **off by default**: it costs 3x the tokens and ~2x the
-wall clock (115-134s measured, against a 60s budget), because the endpoint
-serialises concurrent requests. Assume single-sample behaviour unless told
-otherwise.
+**These three rows are history, not the current service.** Since they were
+measured the model changed to `deepseek-chat`, the rubric to `risk-v2`, and
+the vote now groups findings by the clause they concern rather than by the
+articles they cite — which changes what "the same finding" means, so the
+Jaccard column is not comparable across that line. What is measured on the
+current build: three runs of the demo lease took 15–35s each and scored 38–82.
+Treat the spread, not the table, as the live fact; the table is due a
+re-measure.
+
+The 3-sample vote is **on by default** (`"samples": 3`, clamped to 1–3). It
+costs 3x the tokens and, because the endpoint only partly parallelises them,
+under 3x the wall clock — 36s end to end measured against the 60s budget
+(NFR-1.1). Drop to `"samples": 1` for a faster, noisier report.
 
 The checklist fixes the *cardinality* of the completeness half — all 11
 verdicts are always present, and their severities are assigned by this service
@@ -124,10 +156,9 @@ restart clears it) and per-worker if this ever runs more than one. Build your
 own store per the bullet above once Sprint 7 starts; don't depend on this
 staying around.
 
-`analyze_contract`'s job payload also accepts an optional `"samples"` integer
-(1-3, default 1) to opt a specific request into the 3-sample vote above — pick
-this for a contract you know needs to look extra solid live and can afford
-~2x the wall clock, not for general traffic (see NFR-1.1 in *Failure modes*).
+`analyze_contract`'s job payload accepts an optional `"samples"` integer (1-3,
+default 3) that sets how many independent analyses are voted on. Send 1 when
+latency matters more than agreement (see NFR-1.1 in *Failure modes*).
 
 ## `generate_contract`
 
@@ -152,6 +183,12 @@ execution line and signature block are not part of `body`.
 | `failed` | Fail-closed. No verified sources, KB unreachable, or the model never returned valid output after 3 attempts | Return the contract to `draft`, notify. `error` is safe to log, not to show a user |
 | `timed_out` | Exceeded the 60s budget (NFR-1.1) | Same as failed. Retrying may succeed — it is a latency limit, not a verdict |
 | *no callback* | The AI service died, or callback delivery failed | **We do not retry callback delivery.** Your relay needs its own timeout to move a stuck job out of `dispatched` |
+
+A `timed_out` is not always the model's fault: the embedding provider is on a
+free tier that answers 429 past 20 requests/minute, and our client waits it
+out in 20s steps. A burst of jobs can therefore spend the whole 60s budget in
+retrieval backoff before the LLM is ever called. If timeouts cluster, check
+the embedding quota before blaming the analysis.
 
 An empty `findings[]` with a full `coverage[]` means the contract is sound —
 that is a real result, not an error. A *missing* `coverage[]` is a bug; report

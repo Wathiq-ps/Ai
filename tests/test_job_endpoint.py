@@ -127,6 +127,7 @@ def test_analyze_contract_sends_signed_callback_with_findings_and_score(monkeypa
             findings=[
                 Finding(
                     kind="missing_clause",
+                    clause_kind="dispute_resolution",
                     severity="high",
                     title_ar="بند مفقود",
                     title_en="Missing clause",

@@ -59,6 +59,7 @@ def _analysis_json(findings: list[dict], coverage: dict | None = None) -> str:
 def _finding(**overrides) -> dict:
     entry = {
         "kind": "ambiguity",
+        "clause_kind": "duration",
         "severity": "high",
         "title_ar": "صياغة غامضة",
         "title_en": "Ambiguous wording",
@@ -88,7 +89,20 @@ def test_parse_and_ground_accepts_a_clean_contract():
     _cov, findings, _, _ = _parse_and_ground(_analysis_json([]), {"C1": _result(1)})
 
     assert findings == []
-    assert risk_score(findings) == 0
+    assert risk_score([], findings) == 0
+
+
+def test_coverage_may_report_an_absent_clause_without_citing_anything():
+    """A clause the statute never mentions has nothing to cite. Requiring a
+    citation here only sent the repair loop around again at ~100s a turn —
+    BR-25 bans invented citations, not uncited checklist verdicts."""
+    raw = _analysis_json([], _coverage(termination={"status": "absent", "note": "لا يوجد بند إنهاء."}))
+
+    coverage, findings, _, _ = _parse_and_ground(raw, {"C1": _result(1)})
+
+    termination = next(c for c in coverage if c.clause_kind == "termination")
+    assert termination.status == "absent"
+    assert termination.citations == []
 
 
 @pytest.mark.parametrize(
@@ -114,17 +128,27 @@ def test_parse_and_ground_rejects_malformed_analyses(raw):
 
 def _built(severity: str) -> Finding:
     return Finding(
-        kind="risk", severity=severity, title_ar="a", title_en="b", description="c",
+        kind="risk", clause_kind="other", severity=severity, title_ar="a", title_en="b", description="c",
         suggested_text=None, citations=[], confidence=0.5,
     )
 
 
-def test_risk_score_is_deterministic_severity_weighted_and_capped():
-    assert risk_score([]) == 0
-    assert risk_score([_built("low")]) == 3
-    assert risk_score([_built("critical")]) == 35
-    assert risk_score([_built("high"), _built("medium")]) == 26
-    assert risk_score([_built("critical")] * 10) == 100
+def _cov(status: str, kind: str = "price") -> ClauseCoverage:
+    return ClauseCoverage(clause_kind=kind, status=status, note="n", citations=[])
+
+
+def test_risk_score_scores_completeness_and_judgement_separately():
+    clean = [_cov("present", k) for k in CLAUSE_KINDS]
+
+    assert risk_score(clean, []) == 0
+    assert risk_score(clean, [_built("low")]) == 3
+    assert risk_score(clean, [_built("critical")]) == 35
+    assert risk_score(clean, [_built("high"), _built("medium")]) == 26
+    # Neither half can reach 100 alone — that saturation is what risk-v1 did.
+    assert risk_score(clean, [_built("critical")] * 10) == 45
+    assert risk_score([_cov("absent", k) for k in CLAUSE_KINDS], []) == 55
+    assert risk_score([_cov("incomplete", k) for k in CLAUSE_KINDS], []) == 28
+    assert risk_score([_cov("absent", k) for k in CLAUSE_KINDS], [_built("critical")] * 10) == 100
 
 
 class _ScriptedLLM:
@@ -237,9 +261,9 @@ def _sample(statuses: dict, findings: list[Finding]) -> tuple:
     return (coverage, findings, "ملخص", "summary")
 
 
-def _judgement(kind: str, article: str) -> Finding:
+def _judgement(kind: str, article: str, clause_kind: str = "duration") -> Finding:
     return Finding(
-        kind=kind, severity="medium", title_ar="عنوان", title_en="Title",
+        kind=kind, clause_kind=clause_kind, severity="medium", title_ar="عنوان", title_en="Title",
         description="desc", suggested_text=None,
         citations=[Citation(source_id=uuid.uuid4(), article_ref=article, chunk_id=uuid.uuid4(), excerpt="x")],
         confidence=0.8,
@@ -281,6 +305,21 @@ def test_vote_keeps_findings_a_majority_raised_and_drops_one_off_flags():
     _, judgements, _, _ = _vote(samples)
 
     assert [(f.kind, f.citations[0].article_ref) for f in judgements] == [("legal_conflict", "المادة (4)")]
+
+
+def test_vote_groups_the_same_problem_even_when_samples_cite_different_articles():
+    """The vote is on kind + clause_kind, not on the articles cited. Three
+    samples flagging the vague lease term against three different articles are
+    one finding with a majority, not three one-offs that all get dropped."""
+    samples = [
+        _sample({}, [_judgement("ambiguity", "المادة (4)", "duration")]),
+        _sample({}, [_judgement("ambiguity", "المادة (6)", "duration")]),
+        _sample({}, [_judgement("ambiguity", "المادة (2)", "duration")]),
+    ]
+
+    _, judgements, _, _ = _vote(samples)
+
+    assert [(f.kind, f.clause_kind) for f in judgements] == [("ambiguity", "duration")]
 
 
 def test_vote_keeps_the_coverage_note_from_a_sample_that_voted_that_way():

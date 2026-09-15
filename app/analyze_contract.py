@@ -45,12 +45,25 @@ COVERAGE_STATUSES = ["present", "incomplete", "absent"]
 COVERAGE_SEVERITY = {"absent": "high", "incomplete": "medium"}
 SEVERITIES = ["low", "medium", "high", "critical"]
 
-# Deterministic rubric: severity weights summed and capped at 100. Chosen so a
-# single critical finding lands in the top band, and it takes a pile of low
-# findings to get there. Bump the version string with any weight change —
-# stored scores from an older rubric are not comparable.
-RISK_RUBRIC_VERSION = "risk-v1"
+# Deterministic rubric, in two halves that cannot drown each other out.
+#
+# risk-v1 summed severity weights over every finding and capped at 100. Once
+# the checklist started emitting a verdict for all 11 clause kinds, that
+# saturated: a thin lease with 5 absent + 5 incomplete clauses scores
+# 5*18 + 5*8 = 130 from completeness alone, before a single judgement finding.
+# Measured on the demo lease, two runs of deepseek-chat both scored exactly
+# 100 — a number that is the same for every flawed contract says nothing.
+#
+# risk-v2 scores completeness as a *share* of the checklist (at most
+# COMPLETENESS_CAP) and the judgement findings by severity (at most
+# JUDGEMENT_CAP), so neither half can reach 100 on its own and the score keeps
+# moving in the range real contracts live in. Bump the version with any weight
+# change — stored scores from an older rubric are not comparable.
+RISK_RUBRIC_VERSION = "risk-v2"
 SEVERITY_WEIGHTS = {"low": 3, "medium": 8, "high": 18, "critical": 35}
+COVERAGE_WEIGHTS = {"absent": 1.0, "incomplete": 0.5, "present": 0.0}
+COMPLETENESS_CAP = 55
+JUDGEMENT_CAP = 45
 
 
 class AnalysisFailed(Exception):
@@ -61,6 +74,7 @@ class AnalysisFailed(Exception):
 @dataclass
 class Finding:
     kind: str
+    clause_kind: str
     severity: str
     title_ar: str
     title_en: str
@@ -116,7 +130,7 @@ async def analyze_contract(
     content: str,
     contract_type: str | None = None,
     k_per_topic: int = 5,
-    samples: int = 1,
+    samples: int = 3,
 ) -> AnalyzeContractResult:
     """`samples` > 1 runs that many independent analyses over the *same*
     retrieved excerpts and keeps only what they agree on — self-consistency.
@@ -124,16 +138,21 @@ async def analyze_contract(
     Jaccard 0.48 over four runs, risk_score 35-67 on one contract), and a
     lawyer re-running a review should not get a different report.
 
-    Measured over four runs of one contract: k=3 lifts mean pairwise Jaccard
-    0.48 -> 0.58 and the findings present in every run from 2 to 4, and
-    narrows risk_score from 35-67 to 48-67. It helps; it does not make the
-    report reproducible.
+    Measured over four runs of one contract: 3 samples lift mean pairwise
+    Jaccard 0.48 -> 0.58 and the findings present in every run from 2 to 4,
+    and narrow risk_score's spread. It helps; it does not make the report
+    reproducible.
 
-    Costs `samples` times the tokens, and — despite asyncio.gather — roughly
-    twice the wall clock, not the same: the endpoint serialises concurrent
-    requests on one key, so k=3 measured 115-134s against a 60s budget
-    (NFR-1.1). That is why the default is 1. Do not raise it without either a
-    higher budget or a provider that really runs these in parallel.
+    It also does the model's discipline for it: deepseek-chat re-reports
+    missing clauses as `risk`/`suggestion` findings despite the prompt
+    forbidding it, and those duplicates differ from run to run, so the vote
+    drops them — 11 judgement findings on one sample became 2 across three.
+
+    The default was 1 while a sample cost 100s+. On deepseek-chat three
+    samples measured 36s end to end against the 60s budget (NFR-1.1), which
+    is what makes this affordable: the cost is 3x the tokens, and the wall
+    clock is under 3x only because asyncio.gather overlaps what the endpoint
+    lets it overlap. Raising it further needs a higher budget.
     """
     cache_key = _analysis_cache_key(jurisdiction_id, content, contract_type, k_per_topic, samples)
     if cache_key in _analysis_cache:
@@ -167,10 +186,10 @@ async def analyze_contract(
     result = AnalyzeContractResult(
         coverage=coverage,
         findings=findings,
-        risk_score=risk_score(findings),
+        risk_score=risk_score(coverage, judgements),
         summary_ar=summary_ar,
         summary_en=summary_en,
-        confidence=_overall_confidence(findings),
+        confidence=_overall_confidence(judgements),
         kb_version_id=kb_version_id,
     )
     if len(_analysis_cache) >= _CACHE_CAPACITY:
@@ -199,9 +218,16 @@ _STATUS_RANK = {"absent": 0, "incomplete": 1, "present": 2}
 
 def _finding_key(f: Finding) -> tuple:
     """What a finding is *about* — findings carry no id, and two samples will
-    word the same problem differently, so identity is its kind plus the
-    articles it rests on."""
-    return (f.kind, tuple(sorted(c.article_ref or "?" for c in f.citations)))
+    word the same problem differently, so identity is its kind plus the clause
+    it concerns.
+
+    It used to be kind plus the articles cited. That was too strict to vote
+    on: three samples all flagged the vague lease term, each grounding it in a
+    different article, so no key reached the majority and the report came back
+    with zero judgement findings (measured). Which clause a finding is about
+    is the model's own answer to "what is this about", and it is stable in a
+    way its choice of supporting article is not."""
+    return (f.kind, f.clause_kind)
 
 
 def _vote(samples: list[tuple]) -> tuple[list[ClauseCoverage], list[Finding], str, str]:
@@ -244,17 +270,30 @@ class _InvalidAnalysis(Exception):
 _LABEL_IN_PROSE = re.compile(r"(?<![A-Za-z0-9])C\d+(?![A-Za-z0-9])")
 
 
-def risk_score(findings: list[Finding]) -> int:
-    """0-100, severity-weighted, capped. Deterministic — no model involved."""
-    return min(100, sum(SEVERITY_WEIGHTS[f.severity] for f in findings))
+def risk_score(coverage: list[ClauseCoverage], judgements: list[Finding]) -> int:
+    """0-100. Deterministic — no model involved.
+
+    `judgements` is the model's findings only: the checklist verdicts are
+    already scored through `coverage`, and passing the `missing_clause`
+    findings derived from them would count the same gap twice.
+    """
+    share = sum(COVERAGE_WEIGHTS[c.status] for c in coverage) / (len(coverage) or 1)
+    judgement = min(JUDGEMENT_CAP, sum(SEVERITY_WEIGHTS[f.severity] for f in judgements))
+    return round(COMPLETENESS_CAP * share + judgement)
 
 
-def _overall_confidence(findings: list[Finding]) -> float:
-    """Mean of per-finding confidence; a clean contract (no findings) is a
-    confident result, not an unknown one."""
-    if not findings:
+def _overall_confidence(judgements: list[Finding]) -> float:
+    """Mean of per-finding confidence over the model's judgements only.
+
+    The checklist findings are all confidence 1.0 by construction (their
+    severity comes from a table here, not from the model), so averaging them
+    in just pulled every report towards 1.0 — a thin lease with two shaky
+    judgement findings reported 0.98. A clean contract (no judgements) is a
+    confident result, not an unknown one.
+    """
+    if not judgements:
         return 1.0
-    return round(sum(f.confidence for f in findings) / len(findings), 3)
+    return round(sum(f.confidence for f in judgements) / len(judgements), 3)
 
 
 async def _retrieve_context(
@@ -289,7 +328,7 @@ def _build_prompt(content: str, contract_type: str | None, context: dict[str, Se
         "excerpts provided; do not invent legal rules. Reply with JSON only, no prose, no markdown "
         'fences, shaped exactly as: {"summary_ar": "...", "summary_en": "...", "coverage": '
         '{"parties": {"status": "...", "note": "...", "cites": ["C1"]}, ...}, "findings": '
-        '[{"kind": "...", "severity": "...", "title_ar": "...", "title_en": "...", '
+        '[{"kind": "...", "clause_kind": "...", "severity": "...", "title_ar": "...", "title_en": "...", '
         '"description": "...", "suggested_text": "..." or null, "cites": ["C1"], "confidence": 0.8}]}. '
         f"`coverage` MUST contain an entry for every one of these {len(CLAUSE_KINDS)} clause kinds, "
         f"with no others and none left out: {', '.join(CLAUSE_KINDS)}. This is a checklist, not a "
@@ -297,9 +336,13 @@ def _build_prompt(content: str, contract_type: str | None, context: dict[str, Se
         f"{' | '.join(COVERAGE_STATUSES)}: `present` = the clause is there and usable; `incomplete` "
         "= the clause is there but unusable as written (an unfilled blank, a term left open); "
         "`absent` = there is no such clause. note is one Arabic sentence saying why, and is what the "
-        "reader sees, so name articles by number. A missing or inadequate clause is reported HERE "
+        "reader sees, so name articles by number. cites carries the excerpt labels the verdict "
+        "rests on where the law speaks to that clause, and is an empty list where it does not — "
+        "do not invent a citation to fill it. A missing or inadequate clause is reported HERE "
         f"and nowhere else — do NOT put missing_clause entries in `findings`.\n"
         f"`findings` carries only the judgement calls: {', '.join(k for k in FINDING_KINDS if k != 'missing_clause')}. "
+        f"clause_kind says which clause the finding is about and must be one of the same "
+        f"{len(CLAUSE_KINDS)} kinds; use `other` when it concerns the contract as a whole. "
         f"severity must be one of: {', '.join(SEVERITIES)}, judged against these anchors — the "
         "risk score is computed from them, so apply them literally rather than by feel:\n"
         "  critical — the contract or the term is void or unenforceable, or it strips a party of a "
@@ -388,10 +431,18 @@ def _parse_coverage(raw: object, context: dict[str, SearchResult]) -> list[Claus
         cites = entry.get("cites") or []
         if not all(label in context for label in cites):
             raise _InvalidAnalysis(f"coverage entry for {kind!r} cites an unknown label")
-        # BR-25 again: a non-`present` verdict becomes a finding, and a finding
-        # with no grounding is not a finding. A clean clause needs no citation.
-        if status != "present" and not cites:
-            raise _InvalidAnalysis(f"coverage entry for {kind!r} is {status} but cites nothing")
+        # No "non-present must cite" rule here, deliberately. It was the single
+        # biggest cost in this agent: measured on one thin lease, all three
+        # DeepSeek models failed it on the first attempt (pro, flash and chat
+        # each on a different clause), so the common case was two or three
+        # 100s+ LLM calls against a 60s budget — a self-inflicted timeout.
+        #
+        # It was also the wrong rule. BR-25 forbids citing law we never
+        # retrieved; it does not require a citation for every verdict. A
+        # `missing_clause` finding is an enumeration of *our* checklist
+        # (FR-6.2), not a claim about a statute, and "this lease has no
+        # termination clause" is often true with no excerpt that says it must.
+        # Judgement findings still must cite — those are claims about the law.
         coverage.append(
             ClauseCoverage(
                 clause_kind=kind,
@@ -418,6 +469,7 @@ def _coverage_finding(entry: ClauseCoverage) -> Finding:
     same — which is what makes risk_score reproducible."""
     return Finding(
         kind="missing_clause",
+        clause_kind=entry.clause_kind,
         severity=COVERAGE_SEVERITY[entry.status],
         title_ar=f"{'بند غائب' if entry.status == 'absent' else 'بند غير مكتمل'}: {entry.clause_kind}",
         title_en=f"{'Absent' if entry.status == 'absent' else 'Incomplete'} clause: {entry.clause_kind}",
@@ -434,8 +486,14 @@ def _ground_finding(entry: object, context: dict[str, SearchResult]) -> Finding:
 
     kind = entry.get("kind")
     severity = entry.get("severity")
+    clause_kind = entry.get("clause_kind")
     if kind not in FINDING_KINDS:
         raise _InvalidAnalysis(f"unknown finding kind {kind!r}")
+    # Which clause the finding is about. Required because the vote is taken on
+    # it (see _finding_key), and useful to a review UI that wants to show a
+    # judgement next to the clause it concerns.
+    if clause_kind not in CLAUSE_KINDS:
+        raise _InvalidAnalysis(f"unknown clause_kind {clause_kind!r} on a {kind} finding")
     if severity not in SEVERITIES:
         raise _InvalidAnalysis(f"unknown severity {severity!r} on a {kind} finding")
 
@@ -468,6 +526,7 @@ def _ground_finding(entry: object, context: dict[str, SearchResult]) -> Finding:
     suggested = entry.get("suggested_text")
     return Finding(
         kind=kind,
+        clause_kind=clause_kind,
         severity=severity,
         title_ar=entry["title_ar"].strip(),
         title_en=entry["title_en"].strip(),

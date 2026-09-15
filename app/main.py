@@ -145,13 +145,13 @@ async def _run_analyze_contract(job: JobRequest) -> None:
         payload = job.payload
         if not payload.get("content"):
             raise AnalysisFailed("payload missing required field: content")
-        # Opt-in only: self-consistency voting (samples>1) buys real stability
-        # (mean pairwise Jaccard 0.48->0.58 measured) at ~2x wall clock against
-        # the 60s budget (NFR-1.1), so the default stays 1. A caller that knows
-        # a given job can afford the extra time — a demo contract prepared in
-        # advance, not general traffic — can ask for it explicitly. Clamped so
-        # a stray large value can't blow the timeout even further.
-        samples = max(1, min(3, int(payload.get("samples", 1))))
+        # Self-consistency voting is on by default now that a sample is cheap
+        # (deepseek-chat, no reasoning tokens): 3 samples measured 36s end to
+        # end against the 60s budget (NFR-1.1), and they buy both stability
+        # (mean pairwise Jaccard 0.48->0.58) and a cleaner findings list. A
+        # caller in a hurry can drop to 1. Clamped either way so a stray value
+        # can't blow the timeout.
+        samples = max(1, min(3, int(payload.get("samples", 3))))
         pool = await get_pool()
         result = await asyncio.wait_for(
             analyze_contract(
@@ -205,6 +205,7 @@ async def _run_analyze_contract(job: JobRequest) -> None:
             "findings": [
                 {
                     "kind": f.kind,
+                    "clause_kind": f.clause_kind,
                     "severity": f.severity,
                     "title_ar": f.title_ar,
                     "title_en": f.title_en,

@@ -1,6 +1,7 @@
 """Sprint 4 (1B) — ingestion, versioned rebuild, retrieval against
 `knowledge.*`. See WATHIQ_AI_SPRINT_PLAN.md."""
 
+import asyncio
 import json
 import uuid
 from collections.abc import Sequence
@@ -213,16 +214,28 @@ async def search_many(
 
     Both agents fan out over the same 11 clause topics, which was 11 sequential
     round trips to the embedding API (~9s of an analyze job's ~67s) to compute
-    vectors that never depend on each other. The pgvector queries stay one per
-    query; they are milliseconds against a 1714-chunk index.
+    vectors that never depend on each other.
+
+    The pgvector queries run concurrently for the same reason. They are not
+    milliseconds: measured 4.9s for 11 queries (~445ms each) against the
+    1714-chunk index, because there is no ANN index on `knowledge.chunks`
+    (`<=>` scans every row). Concurrency hides that at 11 queries — the real
+    fix is an hnsw/ivfflat index, which lives in the Back-end migrations.
+    `get_pool()` allows 10 connections, so a wider fan-out queues rather than
+    overruns.
     """
     vectors = await embedder.embed(list(queries))
-    return [
-        await _search_vector(
-            pool, vector, jurisdiction_id=jurisdiction_id, law_type=law_type, k=k, min_score=min_score
+    return list(
+        await asyncio.gather(
+            *(
+                _search_vector(
+                    pool, vector, jurisdiction_id=jurisdiction_id, law_type=law_type,
+                    k=k, min_score=min_score,
+                )
+                for vector in vectors
+            )
         )
-        for vector in vectors
-    ]
+    )
 
 
 async def _search_vector(

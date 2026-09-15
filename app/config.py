@@ -31,9 +31,19 @@ class Settings(BaseSettings):
     rerank_model: str = "nvidia/llama-nemotron-rerank-vl-1b-v2:free"
 
     # DeepSeek — LLM, direct platform API (OpenAI-compatible), not OpenRouter.
+    #
+    # A non-reasoning model on purpose. Measured on the demo lease, one analyze
+    # prompt, same excerpts: deepseek-v4-pro 47-137s (8.5k reasoning tokens),
+    # deepseek-v4-flash 51-55s (9.2k reasoning tokens), deepseek-chat 11-17s
+    # (no reasoning tokens). The reasoning models spend ~85% of their output
+    # budget thinking and blow NFR-1.1's 60s on their own, before the repair
+    # loop or a second sample. deepseek-chat leaves enough budget to run the
+    # 3-sample vote (measured 36s end to end), and the vote buys back more
+    # stability than the reasoning models were providing — it drops the
+    # one-off findings they each invented on a different run.
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com/v1"
-    chat_model: str = "deepseek-v4-pro"
+    chat_model: str = "deepseek-chat"
 
 
 settings = Settings()

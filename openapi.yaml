@@ -244,12 +244,15 @@ components:
           minimum: 0
           maximum: 100
           description: >
-            Severity-weighted sum over findings, capped at 100. Computed by the
-            service, never asked of the model. Bands used by the UI:
+            Two halves that cannot drown each other out: completeness, scored as
+            the share of the 11-clause checklist that is absent (weight 1) or
+            incomplete (weight 0.5), worth at most 55; plus the model's
+            judgement findings scored by severity, worth at most 45. Computed by
+            the service, never asked of the model. Bands used by the UI:
             0-29 low, 30-59 medium, 60+ high.
         risk_rubric_version:
           type: string
-          example: risk-v1
+          example: risk-v2
           description: >
             Scores from different rubric versions are NOT comparable. Store it
             next to the score and re-run rather than comparing across versions.
@@ -261,6 +264,11 @@ components:
           type: number
           minimum: 0
           maximum: 1
+          description: >
+            Mean confidence over the model's judgement findings only. The
+            checklist findings carry 1.0 by construction and are excluded, so
+            this does not drift to 1.0 on contracts with many missing clauses.
+            A contract with no judgement findings reports 1.0.
         usage:
           $ref: "#/components/schemas/Usage"
 
@@ -285,17 +293,30 @@ components:
           description: One Arabic sentence, user-facing. Names articles by number.
         citations:
           type: array
-          description: Empty is allowed only when status is `present`.
+          description: >
+            The excerpts the verdict rests on, and empty where the law does not
+            speak to that clause -- a missing clause is measured against this
+            service's checklist, not against a statute that demands it. Never a
+            law the service did not retrieve (BR-25).
           items:
             $ref: "#/components/schemas/Citation"
 
     Finding:
       type: object
-      required: [kind, severity, title_ar, title_en, description, citations]
+      required: [kind, clause_kind, severity, title_ar, title_en, description, citations]
       properties:
         kind:
           type: string
           enum: [missing_clause, legal_conflict, ambiguity, suggestion, risk]
+        clause_kind:
+          type: string
+          enum: [parties, subject, price, payment_terms, duration,
+                 obligations, warranties, termination,
+                 dispute_resolution, governing_law, other]
+          description: >
+            Which clause the finding is about, so a review UI can show it next
+            to that clause. `other` means the contract as a whole. On a
+            missing_clause finding it is the coverage entry it came from.
         severity:
           type: string
           enum: [low, medium, high, critical]
@@ -311,6 +332,10 @@ components:
         citations:
           type: array
           minItems: 1
+          description: >
+            Always at least one on a judgement finding (BR-25). A
+            missing_clause finding inherits its coverage entry's citations,
+            which may be empty.
           items:
             $ref: "#/components/schemas/Citation"
         confidence:
