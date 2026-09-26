@@ -24,7 +24,8 @@ def get_llm_provider() -> LLMProvider:
     from app.providers.openai_compatible import OpenAICompatibleLLMProvider
 
     client = AsyncOpenAI(api_key=settings.deepseek_api_key, base_url=settings.deepseek_base_url)
-    return OpenAICompatibleLLMProvider(client, settings.chat_model)
+    # deepseek-flash thinks by default; the 60s budget needs it off (config.py).
+    return OpenAICompatibleLLMProvider(client, settings.chat_model, extra_body={"thinking": {"type": "disabled"}})
 
 
 def get_embedding_provider() -> EmbeddingProvider:

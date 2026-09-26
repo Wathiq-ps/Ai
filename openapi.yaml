@@ -439,7 +439,7 @@ components:
           example: deepseek
         model_id:
           type: string
-          example: deepseek-chat
+          example: deepseek-flash
         model_version:
           type: string
           description: >-

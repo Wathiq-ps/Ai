@@ -40,9 +40,16 @@ class Settings(BaseSettings):
     # 3-sample vote (measured 36s end to end), and the vote buys back more
     # stability than the reasoning models were providing — it drops the
     # one-off findings they each invented on a different run.
+    #
+    # Since DeepSeek-V4.1 (checked 2026-09-26) `deepseek-chat` is only a legacy
+    # alias: the API answers it as `deepseek-flash` with thinking off, and
+    # /models lists just deepseek-flash and deepseek-v4-pro. So we name the
+    # real model, which also reads images (see DOCUMENT_IMAGES.md). Its default
+    # is thinking ON — a one-line reply spent 106 reasoning tokens — so
+    # get_llm_provider() turns thinking off explicitly to keep the budget above.
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com/v1"
-    chat_model: str = "deepseek-chat"
+    chat_model: str = "deepseek-flash"
 
 
 settings = Settings()

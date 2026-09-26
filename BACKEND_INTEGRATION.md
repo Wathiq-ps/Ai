@@ -35,8 +35,8 @@ Callback body, every kind, every outcome:
   "error_code": "...",         // null unless failed/timed_out; see Failure modes
   "provenance": {
     "provider": "deepseek",
-    "model_id": "deepseek-chat",
-    "model_version": "deepseek-chat",
+    "model_id": "deepseek-flash",
+    "model_version": "deepseek-flash",
     "prompt_version": "analyze_contract-v1",
     "kb_version_id": "..."     // null unless succeeded
   },

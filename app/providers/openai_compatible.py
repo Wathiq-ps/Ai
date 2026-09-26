@@ -21,9 +21,12 @@ class OpenAICompatibleLLMProvider(LLMProvider):
     """Works against any OpenAI-Chat-Completions-compatible endpoint —
     OpenRouter today (deepseek/deepseek-v4-pro), swap base_url/model to change."""
 
-    def __init__(self, client: AsyncOpenAI, model: str):
+    def __init__(self, client: AsyncOpenAI, model: str, extra_body: dict | None = None):
         self._client = client
         self._model = model
+        # Provider-specific request fields the OpenAI schema has no name for
+        # (DeepSeek's `thinking` toggle), sent on every call.
+        self._extra_body = extra_body
 
     async def chat(
         self, system: str, user: str, *, json_mode: bool = False, max_tokens: int | None = None
@@ -33,6 +36,8 @@ class OpenAICompatibleLLMProvider(LLMProvider):
             kwargs["response_format"] = {"type": "json_object"}
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+        if self._extra_body:
+            kwargs["extra_body"] = self._extra_body
         response = await self._client.chat.completions.create(
             model=self._model,
             messages=[
