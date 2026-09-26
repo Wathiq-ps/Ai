@@ -13,8 +13,18 @@
 {"id": "tax-assessment-basis", "question": "ما أساس احتساب الضريبة وأصول التخمين؟", "law_type": "tax", "articles": ["المادة (7)"]}
 {"id": "tax-objection", "question": "كيف يعترض المكلف على قائمة التخمين؟", "law_type": "tax", "articles": ["المادة (9)"]}
 {"id": "tax-appeal", "question": "كيف يستأنف المكلف على قائمة التخمين؟", "law_type": "tax", "articles": ["المادة (10)"]}
+{"id": "sale-registry-only", "question": "أين تجري معاملات التصرف في الأراضي وإعطاء سندات التسجيل بها؟", "law_type": "sale", "articles": ["المادة (2)"]}
+{"id": "sale-registry-deeds-evidence", "question": "هل تعمل المحاكم بسندات التسجيل الصادرة عن دائرة تسجيل الأراضي بلا بينة؟", "law_type": "sale", "articles": ["المادة (4)"]}
+{"id": "sale-preemption-lapse", "question": "متى يسقط حق الشفعة بعد بيع العقار في دائرة التسجيل؟", "law_type": "sale", "articles": ["المادة (2)"]}
+{"id": "sale-unsettled-land-deed", "question": "متى يعتبر البيع العادي بسند في أرض لم تعلن فيها التسوية نافذاً؟", "law_type": "sale", "articles": ["المادة (3)"]}
+{"id": "sale-power-of-attorney", "question": "ما مدة نفاذ الوكالة ببيع الأموال غير المنقولة لدى دوائر التسجيل؟", "law_type": "sale", "articles": ["المادة (11)"]}
+{"id": "sale-price-security-deed", "question": "من ينظم سند الدين عند وضع العقار تأميناً لباقي ثمنه؟", "law_type": "sale", "articles": ["المادة (6)"]}
+{"id": "sale-mortgaged-property", "question": "هل يجوز للمدين بيع العقار الموضوع تأميناً للدين؟", "law_type": "sale", "articles": ["المادة (10)"]}
+{"id": "sale-registry-contract", "question": "كيف تجري معاملة بيع الأرض في دائرة تسجيل الأراضي؟", "law_type": "ownership", "articles": ["المادة (3)"]}
+{"id": "sale-first-registration", "question": "ما إجراءات تسجيل أموال غير منقولة لم يسبق تسجيلها؟", "law_type": "ownership", "articles": ["المادة (4)"]}
 {"id": "crosslaw-rent-eviction", "question": "متى يجوز للمحكمة أن تحكم بإخلاء المستأجر من العقار؟", "articles": ["المادة (4)"]}
 {"id": "crosslaw-foreign-lease-permit", "question": "هل يحتاج غير الفلسطيني إلى إذن لاستئجار أموال غير منقولة؟", "articles": ["المادة (2)"]}
 {"id": "crosslaw-tax-liability", "question": "على من تقع ضريبة الأبنية والأراضي؟", "articles": ["المادة (11)"]}
 {"id": "crosslaw-ijara-formation", "question": "كيف تنعقد الإجارة بالإيجاب والقبول؟", "articles": ["المادة (433)"]}
 {"id": "crosslaw-ijara-shared-ownership", "question": "هل يفسد عقد الإجارة إذا ظهر شريك في العين المؤجرة بعد العقد؟", "articles": ["المادة (430)"]}
+{"id": "crosslaw-sale-preemption-lapse", "question": "متى يسقط حق الشفعة بعد بيع العقار في دائرة التسجيل؟", "articles": ["المادة (2)"]}

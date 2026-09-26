@@ -281,6 +281,68 @@ def test_generate_contract_scopes_retrieval_to_the_contract_law_plus_general(mon
     assert seen[0]["law_type"] == ["rent", "general"]
 
 
+def test_sale_retrieval_covers_the_registry_and_tax_laws_and_asks_no_lease_question(monkeypatch):
+    seen: list = []
+
+    async def _recording_search(pool, embedder, **kwargs):
+        seen.append(kwargs)
+        return [[_result(1)] for _ in kwargs["queries"]]
+
+    monkeypatch.setattr(gc, "search_many", _recording_search)
+
+    class _LLM:
+        async def chat(self, system, user, *, json_mode=False, max_tokens=None):
+            return _full_draft_json({}, "C1")
+
+    asyncio.run(
+        generate_contract(
+            None, _LLM(), None, jurisdiction_id=JURISDICTION_ID, contract_type="sale",
+            parties=[{"role": "seller", "name": "A"}, {"role": "buyer", "name": "B"}], property={"address": "Y"},
+        )
+    )
+
+    [call] = seen
+    assert call["law_type"] == ["sale", "ownership", "tax", "general"]
+    assert len(call["queries"]) == len(gc.CLAUSE_TOPICS)
+    assert not any("contract duration" in q for q in call["queries"])
+    assert any("Land Registry" in q for q in call["queries"])
+
+
+def _system_prompt(contract_type: str) -> str:
+    system, _user = gc._build_prompt(
+        contract_type, [{"role": "x", "name": "A"}], {"address": "X"}, None, "ar", {"C1": _result(1)}
+    )
+    return system
+
+
+def test_sale_prompt_drafts_a_sale_agreement_between_seller_and_buyer():
+    system = _system_prompt("sale")
+
+    assert "اتفاقية بيع" in system
+    assert "الطرف الأول (البائع)" in system and "الطرف الثاني (المشتري)" in system
+    assert all(note in system for note in gc.SALE_DRAFTING_NOTES.values())
+    assert "ownership passes to the buyer only when the sale is registered" in system
+    assert "a sale between two Palestinians" in system
+    # None of the lease wording leaks into a sale.
+    for lease in ("عقد إيجار", "(المؤجر)", "(المستأجر)", "[تاريخ بدء الإجارة]", "a lease between"):
+        assert lease not in system
+
+
+def test_rent_prompt_keeps_its_lease_wording():
+    """Rent is live: the per-type split must not change a word of its prompt."""
+    system = _system_prompt("rent")
+
+    assert "the plain, operative register of a عقد إيجار executed before الكاتب العدل" in system
+    assert "an excerpt about foreigners, sales or taxes has no place in a lease between two Palestinians." in system
+    assert "a bracketed blank such as [تاريخ بدء الإجارة] rather than" in system
+    assert all(f"- {kind}: {gc.DRAFTING_NOTES[kind]}" in system for kind in CLAUSE_KINDS)
+    assert "البائع" not in system and "دائرة تسجيل الأراضي" not in system
+
+
+def test_sale_is_draftable():
+    assert gc.DRAFTABLE_CONTRACT_TYPES == {"rent", "sale"}
+
+
 def test_generate_contract_falls_back_to_general_for_an_unknown_contract_type(monkeypatch):
     seen: list = []
 

@@ -42,8 +42,8 @@ from app.wire import (
 
 # ponytail: bump manually when a prompt changes materially — no registry,
 # these strings are just what lands in provenance.prompt_version.
-GENERATE_CONTRACT_PROMPT_VERSION = "generate_contract-v4"
-ANALYZE_CONTRACT_PROMPT_VERSION = "analyze_contract-v1"
+GENERATE_CONTRACT_PROMPT_VERSION = "generate_contract-v5"
+ANALYZE_CONTRACT_PROMPT_VERSION = "analyze_contract-v2"
 REINDEX_PROMPT_VERSION = "reindex-v1"  # no prompt; provenance wants a version string
 
 

@@ -344,3 +344,40 @@ def test_every_clause_kind_has_an_arabic_label():
     from app.analyze_contract import CLAUSE_LABELS_AR
 
     assert set(CLAUSE_LABELS_AR) == set(CLAUSE_KINDS)
+
+
+def test_a_sale_is_judged_on_its_price_and_registry_transfer_not_a_rent():
+    system, _ = ac._build_prompt("عقد بيع", "sale", {"C1": _result(1)})
+
+    assert "absent (parties, property, price, a commitment to complete the transfer at دائرة تسجيل الأراضي)" in system
+    assert "[رقم القطعة]" in system
+    assert "property, rent" not in system and "الإجارة" not in system
+
+
+@pytest.mark.parametrize("contract_type", ["rent", None, "barter"])
+def test_rent_and_untyped_reviews_keep_the_wording_analyze_shipped_with(contract_type):
+    system, _ = ac._build_prompt("عقد", contract_type, {"C1": _result(1)})
+
+    assert "absent (parties, property, rent).\n" in system
+    assert "bracketed blanks such as [تاريخ بدء الإجارة] for anything" in system
+    assert "دائرة تسجيل الأراضي" not in system
+
+
+def test_sale_review_retrieves_the_sale_laws(monkeypatch):
+    seen: list = []
+
+    async def _recording_search(pool, embedder, **kwargs):
+        seen.append(kwargs)
+        return [[_result(1)] for _ in kwargs["queries"]]
+
+    monkeypatch.setattr(ac, "search_many", _recording_search)
+    asyncio.run(
+        analyze_contract(
+            pool=None, llm=_ScriptedLLM([_analysis_json([])] * 3), embedder=None,
+            jurisdiction_id=JURISDICTION_ID, content="اتفاقية بيع شقة.", contract_type="sale",
+        )
+    )
+
+    [call] = seen
+    assert call["law_type"] == ["sale", "ownership", "tax", "general"]
+    assert not any("contract duration" in q for q in call["queries"])

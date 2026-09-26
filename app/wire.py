@@ -38,8 +38,8 @@ class ErrorCode(StrEnum):
 class GenerateContractPayload(BaseModel):
     """openapi.yaml GenerateContractPayload.
 
-    `contract_type` is a plain string, not a `Literal["rent"]`: `rent` is what
-    this service can *draft*, and any other value is accepted on the wire and
+    `contract_type` is a plain string, not a `Literal["rent", "sale"]`: those are
+    what this service can *draft*, and any other value is accepted on the wire and
     answered with a signed `unsupported_contract_type` failure. A Literal here
     would turn that into a 422 and leave Laravel with no callback at all.
 
