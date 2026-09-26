@@ -59,10 +59,25 @@ async def ingest_document(
     checksum + ar/en detect, insert into `knowledge.documents`. `raw_path`
     is where the source file lives on disk (see app/document_loader.py) --
     optional because in-memory text (tests, pasted text) has no file behind
-    it."""
+    it.
+
+    Text this source already holds (same checksum) returns the existing
+    document rather than a copy the next reindex would index twice, so
+    scripts/ingest_corpus.py is safe to re-run after adding a law.
+    ponytail: check-then-insert, not a unique index on (source_id, checksum)
+    (that lives in the Back-end migrations) — two concurrent ingests of one
+    text can both insert, and an edited file adds a second document beside
+    the old one. Fine for a human running the script."""
     checksum = sha256_checksum(raw_text.encode("utf-8"))
     lang = language or detect_language(raw_text)
     async with pool.acquire() as conn:
+        existing = await conn.fetchval(
+            "select id from knowledge.documents where source_id = $1 and checksum = $2",
+            source_id,
+            checksum,
+        )
+        if existing is not None:
+            return existing
         row = await conn.fetchrow(
             """
             insert into knowledge.documents (source_id, title, language, checksum, raw_path)

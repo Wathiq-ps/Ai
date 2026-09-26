@@ -293,6 +293,30 @@ def test_unverified_source_is_never_retrievable():
     asyncio.run(scenario())
 
 
+def test_reingesting_a_document_returns_the_existing_row():
+    """scripts/ingest_corpus.py re-ingests every law on each run; a second
+    `knowledge.documents` row would be indexed twice by the next reindex."""
+
+    async def scenario():
+        async with _sandbox() as (pool, jurisdiction_id, prefix, _verifier_id):
+            document = await _seed_document(pool, jurisdiction_id, prefix, is_verified=False)
+            async with pool.acquire() as conn:
+                source_id = await conn.fetchval(
+                    "select source_id from knowledge.documents where id = $1", document.document_id
+                )
+
+            again = await ingest_document(pool, source_id=source_id, title=f"{prefix}document", raw_text=LAW_TEXT)
+
+            assert again == document.document_id
+            async with pool.acquire() as conn:
+                count = await conn.fetchval(
+                    "select count(*) from knowledge.documents where source_id = $1", source_id
+                )
+            assert count == 1
+
+    asyncio.run(scenario())
+
+
 def test_expired_chunks_are_never_retrievable():
     """Exit criterion 5: a law that has been repealed (effective_to in the
     past) must drop out of retrieval even from a verified source."""
