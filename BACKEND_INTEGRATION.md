@@ -210,6 +210,39 @@ input was not supplied. These are deliberate, not failures — surface them as
 fields to fill. A draft is **not** signable: the opening formula, تمهيد,
 execution line and signature block are not part of `body`.
 
+## `reindex`
+
+UC-080. Rebuilds this jurisdiction's active knowledge-base version from every
+document already registered in `knowledge.documents`.
+
+Send a job with `"kind": "reindex"` and a payload that may carry an optional
+`tag` (a label for the new version) and `notes`:
+
+```json
+{ "job_id": "...", "kind": "reindex", "jurisdiction_id": "...",
+  "payload": { "tag": "2026-q3-laws" } }
+```
+
+The AI service **cannot create or verify sources** — it only indexes what Laravel
+has already registered. Here's the trap: an empty knowledge base is not an empty
+success. Reindex fails with `error_code: no_documents` rather than activating an
+empty version, because every retrieval after that would silently answer "no
+verified law found" and read as a legal conclusion instead of a wiring bug.
+
+On success `result` is:
+
+```json
+{ "kb_version_id": "...", "documents": 12 }
+```
+
+`documents` is how many documents went into the build, not the chunk count. The
+new version becomes the active one the moment the callback lands, so every job
+that started before it keeps the `kb_version_id` in its own callback's
+`provenance` — compare those before treating two reports as comparable.
+
+Reindex is deliberately not on the 60s budget: an embedding pass over a whole
+corpus is not a user-facing request.
+
 ## Failure modes
 
 | `status` | Meaning | What to do |

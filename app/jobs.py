@@ -19,12 +19,12 @@ from __future__ import annotations
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import asyncpg
 from pydantic import BaseModel
 
-from app.analyze_contract import RISK_RUBRIC_VERSION, AnalysisFailed, analyze_contract
+from app.analyze_contract import RISK_RUBRIC_VERSION, analyze_contract
 from app.config import settings
 from app.generate_contract import (
     DRAFTABLE_CONTRACT_TYPES,
@@ -33,6 +33,12 @@ from app.generate_contract import (
 )
 from app.providers.base import EmbeddingProvider, LLMProvider
 from app.reindex import reindex
+from app.wire import (
+    AnalyzeContractPayload,
+    ErrorCode,
+    GenerateContractPayload,
+    ReindexPayload,
+)
 
 # ponytail: bump manually when a prompt changes materially — no registry,
 # these strings are just what lands in provenance.prompt_version.
@@ -59,10 +65,13 @@ class JobOutcome:
     kb_version_id: uuid.UUID
 
 
-Run = Callable[["JobContext", "JobRequest"], Awaitable[JobOutcome]]
-Provenance = Callable[[], tuple[str, str]]
+Run = Callable[["JobContext", "JobRequest", BaseModel], Awaitable[JobOutcome]]
+ProvenanceSource = Callable[[], tuple[str, str]]
 Budget = Callable[[], "float | None"]
-Validate = Callable[[dict], None]
+# Any, not BaseModel: a kind's preflight reads its own payload model's fields,
+# and the table below is what pairs them. Callable[[BaseModel], None] would
+# reject a narrower signature for no safety we don't already have.
+Preflight = Callable[[Any], None]
 # Forward refs above (JobRequest is defined below JOBS, since its `kind` is the
 # Literal derived from the table — one declaration, not two).
 
@@ -90,34 +99,23 @@ def _embedding_provenance() -> tuple[str, str]:
     return "fake", "fake"
 
 
-def _validate_generate_contract(payload: dict) -> None:
-    missing = [k for k in ("contract_type", "parties", "property") if k not in payload]
-    if missing:
-        raise GenerationFailed(f"payload missing required field(s): {missing}", "invalid_payload")
-    if payload["contract_type"] not in DRAFTABLE_CONTRACT_TYPES:
-        raise GenerationFailed(
-            f"drafting a {payload['contract_type']!r} contract is not supported yet",
-            "unsupported_contract_type",
-        )
-
-
-def _validate_analyze_contract(payload: dict) -> None:
-    if not payload.get("content"):
-        raise AnalysisFailed("payload missing required field: content", "invalid_payload")
-
-
-async def _generate_contract(ctx: JobContext, job: JobRequest) -> JobOutcome:
-    payload = job.payload
+async def _generate_contract(
+    ctx: JobContext, job: JobRequest, payload: GenerateContractPayload
+) -> JobOutcome:
+    # Also checked here, not only in the kind's preflight: a direct caller (a
+    # script, the eval harness) reusing this adapter still refuses a type it
+    # cannot draft.
+    check_contract_type_is_draftable(payload)
     result = await generate_contract(
         ctx.pool,
         ctx.llm,
         ctx.embedder,
         jurisdiction_id=job.jurisdiction_id,
-        contract_type=payload["contract_type"],
-        parties=payload["parties"],
-        property=payload["property"],
-        terms=payload.get("terms"),
-        language=payload.get("language", "ar"),
+        contract_type=payload.contract_type,
+        parties=payload.parties,
+        property=payload.property,
+        terms=payload.terms,
+        language=payload.language,
     )
     return JobOutcome(
         result={
@@ -129,23 +127,23 @@ async def _generate_contract(ctx: JobContext, job: JobRequest) -> JobOutcome:
     )
 
 
-async def _analyze_contract(ctx: JobContext, job: JobRequest) -> JobOutcome:
-    payload = job.payload
+async def _analyze_contract(
+    ctx: JobContext, job: JobRequest, payload: AnalyzeContractPayload
+) -> JobOutcome:
     # Self-consistency voting is on by default now that a sample is cheap
     # (deepseek-chat, no reasoning tokens): 3 samples measured 36s end to
     # end against the 60s budget (NFR-1.1), and they buy both stability
     # (mean pairwise Jaccard 0.48->0.58) and a cleaner findings list. A
-    # caller in a hurry can drop to 1. Clamped either way so a stray value
-    # can't blow the timeout.
-    samples = max(1, min(3, int(payload.get("samples", 3))))
+    # caller in a hurry can drop to 1. The payload model clamps a stray value
+    # either way so it can't blow the timeout.
     result = await analyze_contract(
         ctx.pool,
         ctx.llm,
         ctx.embedder,
         jurisdiction_id=job.jurisdiction_id,
-        content=payload["content"],
-        contract_type=payload.get("contract_type"),
-        samples=samples,
+        content=payload.content,
+        contract_type=payload.contract_type,
+        samples=payload.samples,
     )
     return JobOutcome(
         result={
@@ -187,18 +185,18 @@ async def _analyze_contract(ctx: JobContext, job: JobRequest) -> JobOutcome:
     )
 
 
-async def _reindex(ctx: JobContext, job: JobRequest) -> JobOutcome:
+async def _reindex(ctx: JobContext, job: JobRequest, payload: ReindexPayload) -> JobOutcome:
     """UC-080. Rebuilds this jurisdiction's kb_version from what is already in
-    knowledge.documents; the payload only carries optional tag/notes — the AI
-    service cannot create or verify sources (see app/reindex.py)."""
+    knowledge.documents; the payload only carries an optional tag and notes —
+    the AI service cannot create or verify sources (see app/reindex.py)."""
     embedding_model = settings.embedding_model if settings.openrouter_api_key else "fake"
     kb_version_id, documents = await reindex(
         ctx.pool,
         ctx.embedder,
         jurisdiction_id=job.jurisdiction_id,
         embedding_model=embedding_model,
-        tag=job.payload.get("tag"),
-        notes=job.payload.get("notes"),
+        tag=payload.tag,
+        notes=payload.notes,
     )
     return JobOutcome(
         result={"kb_version_id": str(kb_version_id), "documents": documents},
@@ -206,18 +204,47 @@ async def _reindex(ctx: JobContext, job: JobRequest) -> JobOutcome:
     )
 
 
+def check_contract_type_is_draftable(payload: GenerateContractPayload) -> None:
+    """Capability, not shape: `contract_type` is any string on the wire so a
+    caller gets a signed answer instead of a 422, and this is what says whether
+    this deployment can actually draft it. Runs as the kind's `preflight`, so it
+    happens before a pool or a provider client is acquired."""
+    if payload.contract_type not in DRAFTABLE_CONTRACT_TYPES:
+        raise GenerationFailed(
+            f"drafting a {payload.contract_type!r} contract is not supported yet",
+            ErrorCode.UNSUPPORTED_CONTRACT_TYPE,
+        )
+
+
 @dataclass(frozen=True)
 class JobKind:
-    """Everything this service knows about one kind of job. `validate` runs
-    before any resource is acquired, so a payload that cannot be served costs no
-    connection and no provider client."""
+    """Everything this service knows about one kind of job.
+
+    Validation is two questions with different owners, and both are asked before
+    anything is acquired:
+
+    - `payload_model` (app/wire.py) — *is this a request at all*? Fixed by the
+      contract, checked against openapi.yaml by tests/test_wire_contract.py.
+    - `preflight` — *can this deployment serve it*? Changes as the service grows,
+      and answers with the error code Laravel stores in ai_jobs.error_code.
+    """
 
     name: str
+    payload_model: type[BaseModel]
+    preflight: Preflight | None
     run: Run
-    validate: Validate | None
     prompt_version: str
-    provenance: Provenance
+    provenance: ProvenanceSource
     timeout: Budget
+
+    def accept(self, raw: dict) -> BaseModel:
+        """The validated payload, or a raise the endpoint turns into a signed
+        callback: pydantic's ValidationError for `invalid_payload`, JobFailed
+        (from a preflight) for its own code."""
+        payload = self.payload_model.model_validate(raw)
+        if self.preflight is not None:
+            self.preflight(payload)
+        return payload
 
 
 JOBS: dict[str, JobKind] = {
@@ -225,24 +252,27 @@ JOBS: dict[str, JobKind] = {
     for kind in (
         JobKind(
             name="generate_contract",
+            payload_model=GenerateContractPayload,
+            preflight=check_contract_type_is_draftable,
             run=_generate_contract,
-            validate=_validate_generate_contract,
             prompt_version=GENERATE_CONTRACT_PROMPT_VERSION,
             provenance=_llm_provenance,
             timeout=_job_budget,
         ),
         JobKind(
             name="analyze_contract",
+            payload_model=AnalyzeContractPayload,
+            preflight=None,
             run=_analyze_contract,
-            validate=_validate_analyze_contract,
             prompt_version=ANALYZE_CONTRACT_PROMPT_VERSION,
             provenance=_llm_provenance,
             timeout=_job_budget,
         ),
         JobKind(
             name="reindex",
+            payload_model=ReindexPayload,
+            preflight=None,
             run=_reindex,
-            validate=None,  # tag/notes only, both optional
             prompt_version=REINDEX_PROMPT_VERSION,
             provenance=_embedding_provenance,
             timeout=_unbounded,

@@ -462,9 +462,10 @@ def test_every_job_kind_declares_a_runner_and_a_prompt_version():
         assert callable(kind.timeout)
 
 
-def test_reindex_payload_needs_no_validation():
-    """UC-080's payload carries an optional tag and notes, nothing required."""
-    assert JOBS["reindex"].validate is None
+def test_reindex_accepts_an_empty_payload():
+    """UC-080's payload carries an optional tag and notes, nothing required —
+    the documents to rebuild from come from knowledge.documents."""
+    assert JOBS["reindex"].accept({}).model_dump() == {"tag": None, "notes": None}
 
 
 def test_only_the_60s_budget_kinds_are_bounded(monkeypatch):

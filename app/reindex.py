@@ -21,6 +21,7 @@ from app.document_loader import UnsupportedDocumentFormat, load_corpus_file
 from app.errors import JobFailed
 from app.knowledge import DocumentForIndex, rebuild_kb_version
 from app.providers.base import EmbeddingProvider
+from app.wire import ErrorCode
 
 
 class ReindexFailed(JobFailed):
@@ -76,7 +77,7 @@ async def reindex(
     """Build and activate a fresh kb_version. Returns (kb_version_id, documents)."""
     documents = await collect_documents(pool, jurisdiction_id=jurisdiction_id)
     if not documents:
-        raise ReindexFailed("no loadable documents for this jurisdiction", "no_documents")
+        raise ReindexFailed("no loadable documents for this jurisdiction", ErrorCode.NO_DOCUMENTS)
 
     kb_version_id = await rebuild_kb_version(
         pool,

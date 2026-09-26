@@ -27,6 +27,7 @@ from app.errors import JobFailed
 from app.knowledge import SearchResult, search_many
 from app.providers.base import EmbeddingProvider, LLMProvider
 from app.usage import stage
+from app.wire import ErrorCode
 
 CLAUSE_KINDS = [
     "parties", "subject", "price", "payment_terms", "duration", "obligations",
@@ -172,7 +173,7 @@ async def generate_contract(
             property=property, k_per_clause=k_per_clause,
         )
     if not context:
-        raise GenerationFailed("no verified law found for this jurisdiction/contract type", "no_verified_sources")
+        raise GenerationFailed("no verified law found for this jurisdiction/contract type", ErrorCode.NO_VERIFIED_SOURCES)
 
     # search() only ever queries the one `active` kb_version per jurisdiction
     # (see app/knowledge.py), so every result here shares the same id.
@@ -197,7 +198,7 @@ async def generate_contract(
         _draft_cache[cache_key] = result
         return result
 
-    raise GenerationFailed(f"LLM never produced valid structured output: {last_error}", "llm_invalid_output")
+    raise GenerationFailed(f"LLM never produced valid structured output: {last_error}", ErrorCode.LLM_INVALID_OUTPUT)
 
 
 class _InvalidDraft(Exception):
