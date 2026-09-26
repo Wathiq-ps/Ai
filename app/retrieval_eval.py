@@ -15,7 +15,9 @@ Metrics per query, then macro-averaged:
 ponytail: article labels are not unique across statutes (every law has a
 `المادة (4)`), so each golden entry carries the `law_type` its answer lives in
 and the runner passes it to `search()` as a filter. Score by document_id too
-if a single law_type ever holds more than one statute.
+if a single law_type ever holds more than one statute — `sale` and
+`ownership` now each hold three, so their entries can score a hit on the
+right article number from the wrong statute: read those as an upper bound.
 """
 
 import json
