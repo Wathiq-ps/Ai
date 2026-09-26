@@ -4,7 +4,8 @@ from app.providers.base import EmbeddingProvider, LLMProvider, RerankProvider
 
 
 class FakeLLMProvider(LLMProvider):
-    """Deterministic stand-in for tests — no network call, same input -> same output."""
+    """Deterministic stand-in for tests — no network call, same input -> same
+    output, and no tokens spent, so it adds nothing to the job's usage."""
 
     async def chat(
         self, system: str, user: str, *, json_mode: bool = False, max_tokens: int | None = None
