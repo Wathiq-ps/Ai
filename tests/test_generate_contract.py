@@ -326,5 +326,53 @@ def test_supplied_terms_reach_the_prompt_and_the_cache_key(monkeypatch):
     asyncio.run(generate_contract(**kwargs, terms={"price": "450.00", "currency": "JOD"}))
     asyncio.run(generate_contract(**kwargs, terms={"price": "500.00", "currency": "JOD"}))
 
-    assert '"price": "450.00"' in prompts[0]
+    assert "450 (أربعمائة وخمسون)" in prompts[0]
     assert len(prompts) == 2  # different terms, so not served from the draft cache
+
+
+def _drafted_prompt(monkeypatch, terms: dict, language: str = "ar") -> str:
+    async def _fake_search(*args, **kwargs):
+        return [[_result(1)] for _ in kwargs["queries"]]
+
+    monkeypatch.setattr(gc, "search_many", _fake_search)
+    llm = _ScriptedLLM([_full_draft_json({}, "C1")])
+    asyncio.run(
+        generate_contract(
+            pool=None, llm=llm, embedder=None, jurisdiction_id=JURISDICTION_ID, contract_type="rent",
+            parties=[{"name": "A"}], property={"address": "Ramallah"}, terms=terms, language=language,
+        )
+    )
+    [prompt] = llm.prompts
+    return prompt
+
+
+def test_a_supplied_price_reaches_the_prompt_in_digits_and_words(monkeypatch):
+    """Regression: a draft read "450.000 دينار أردني (JOD)" and a reviewer
+    took 450.000 for four hundred fifty thousand. The model now gets the
+    amount already stated in digits and words, and never sees the raw decimal
+    or the currency code to copy."""
+    prompt = _drafted_prompt(
+        monkeypatch,
+        {"price": "450.000", "currency": "JOD", "price_unit": "per_month", "starts_on": "2026-10-01"},
+    )
+
+    assert '"price_ar": "450 (أربعمائة وخمسون) ديناراً أردنياً"' in prompt
+    assert '"price_unit_ar": "شهرياً"' in prompt
+    assert '"starts_on": "2026-10-01"' in prompt
+    for raw in ("450.000", "JOD", "per_month"):
+        assert raw not in prompt
+
+
+@pytest.mark.parametrize(
+    ("terms", "language"),
+    [
+        ({"starts_on": "2026-10-01", "ends_on": "2027-09-30"}, "ar"),  # no price: still a bracketed blank
+        ({"price": "450", "currency": "GBP"}, "ar"),  # no Arabic name on file
+        ({"price": "450", "currency": "JOD", "price_unit": "per_month"}, "en"),  # English draft
+    ],
+)
+def test_terms_without_a_statable_arabic_price_reach_the_prompt_unchanged(monkeypatch, terms, language):
+    prompt = _drafted_prompt(monkeypatch, terms, language)
+
+    assert f"Terms: {json.dumps(terms, ensure_ascii=False)}\n" in prompt
+    assert "price_ar" not in prompt

@@ -22,6 +22,7 @@ import re
 import uuid
 from dataclasses import dataclass
 
+from app.arabic_money import PERIODS, amount_ar
 from app.errors import JobFailed
 from app.knowledge import SearchResult, search_many
 from app.providers.base import EmbeddingProvider, LLMProvider
@@ -65,7 +66,7 @@ CONTRACT_LAW_TYPES = {
 DRAFTING_NOTES = {
     "parties": "Name both parties as الطرف الأول (المؤجر) and الطرف الثاني (المستأجر) with their id numbers, and record that they contract in full legal capacity.",
     "subject": "Describe the let property and the use it is let for, and record that the tenant received it in the condition described.",
-    "price": "State the rent figure and the period it covers. Nothing else belongs in this clause.",
+    "price": "State the rent as digits (words) currency period: Terms' price_ar copied character for character, then price_unit_ar — never a bare decimal or a currency code. If Terms carry no price, a bracketed blank. Nothing else belongs in this clause.",
     "payment_terms": "State when and how rent falls due, what counts as valid discharge, and what happens on late payment.",
     "duration": "State the start date, the end date, and what happens at expiry (renewal or vacancy). Use bracketed blanks for any date not supplied.",
     "obligations": "A numbered list of what each party must and must not do — upkeep, subletting, lawful use, returning the property as received.",
@@ -236,7 +237,7 @@ def _build_prompt(
         "two parties owe each other, is wrong and will be rejected.\n"
         "Never cite an excerpt that does not apply to these parties — an excerpt about foreigners, "
         "sales or taxes has no place in a lease between two Palestinians.\n"
-        "Use the supplied Terms (price, currency, price_unit, starts_on, ends_on) exactly as given "
+        "Use the supplied Terms (the rent, its period, starts_on, ends_on) exactly as given "
         "wherever a clause needs them.\n"
         "If a clause needs a detail that was not supplied (a date, a term length, a notice period, a "
         "deposit), write the term with a bracketed blank such as [تاريخ بدء الإجارة] rather than "
@@ -255,10 +256,25 @@ def _build_prompt(
         f"Contract type: {contract_type}\n"
         f"Parties: {json.dumps(parties, ensure_ascii=False)}\n"
         f"Property: {json.dumps(property, ensure_ascii=False)}\n"
-        f"Terms: {json.dumps(terms or {}, ensure_ascii=False)}\n\n"
+        f"Terms: {json.dumps(_prompt_terms(terms, language), ensure_ascii=False)}\n\n"
         f"Law excerpts:\n{excerpts}"
     )
     return system, user
+
+
+def _prompt_terms(terms: dict | None, language: str) -> dict:
+    """The Terms the model sees. A price we can state in Arabic replaces the
+    raw price/currency/price_unit, so "450.000" and "JOD" never reach an
+    Arabic draft — the model copied both verbatim when it had them, and a
+    reviewer read 450.000 as four hundred fifty thousand."""
+    terms = dict(terms or {})
+    price_ar = amount_ar(terms.get("price"), terms.get("currency")) if language == "ar" else None
+    if price_ar:
+        del terms["price"], terms["currency"]
+        terms["price_ar"] = price_ar
+        if terms.get("price_unit") in PERIODS:
+            terms["price_unit_ar"] = PERIODS[terms.pop("price_unit")]
+    return terms
 
 
 def _parse_and_ground(raw: str, context: dict[str, SearchResult]) -> tuple[list[Clause], list[Citation]]:
