@@ -190,6 +190,12 @@ Send `terms` (`price` as a major-unit string, `currency`, `price_unit`,
 `[bracketed blank]` in the draft, which the analysis then reports as
 `incomplete`.
 
+An Arabic draft states the rent in digits and words — `450 (أربعمائة وخمسون)
+ديناراً أردنياً شهرياً` — for `currency` JOD, ILS, USD or EUR and `price_unit`
+`per_month`, `per_year`, `per_week`, `per_day` or `per_hour`. Send `price` at
+the currency's precision or coarser (`"450.500"` JOD is fine, `"450.5555"` is
+not); anything outside those reaches the model as sent.
+
 `body` is `clauses[]` joined by blank lines, in a fixed order — it is derived,
 not independently generated, so the two can never disagree. Render whichever
 suits you, but do not expect `body` to contain anything `clauses[]` does not.
