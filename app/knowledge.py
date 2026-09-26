@@ -39,6 +39,11 @@ class SearchResult:
     article: str | None
     effective_from: date
     effective_to: date | None
+    # The statute this chunk belongs to, as `knowledge.sources` names it — so a
+    # draft can name the law it cites without the model supplying (and
+    # inventing) its number and year.
+    source_title: str
+    source_citation: str | None
 
 
 async def ingest_document(
@@ -261,6 +266,8 @@ async def _search_vector(
                     c.metadata ->> 'article' as article,
                     c.effective_from,
                     c.effective_to,
+                    s.title_ar as source_title,
+                    s.citation as source_citation,
                     1 - (c.embedding <=> $1) as score
                 from knowledge.chunks c
                 join knowledge.kb_versions v on v.id = c.kb_version_id
@@ -298,6 +305,8 @@ async def _search_vector(
             article=row["article"],
             effective_from=row["effective_from"],
             effective_to=row["effective_to"],
+            source_title=row["source_title"],
+            source_citation=row["source_citation"],
         )
         for row in rows
     ]

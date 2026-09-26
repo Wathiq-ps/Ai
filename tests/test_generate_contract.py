@@ -16,6 +16,7 @@ from app.generate_contract import (
 from app.knowledge import SearchResult
 
 JURISDICTION_ID = uuid.uuid4()
+RENT_LAW = "قانون المالكين والمستأجرين رقم (62) لسنة 1953"
 
 
 def _result(label_seed: int) -> SearchResult:
@@ -30,12 +31,20 @@ def _result(label_seed: int) -> SearchResult:
         article=f"Article ({label_seed})",
         effective_from=date(2020, 1, 1),
         effective_to=None,
+        source_title=RENT_LAW,
+        source_citation="قانون رقم (62) لسنة 1953 وتعديلاته",
     )
 
 
-def _full_draft_json(context: dict, cite_label: str) -> str:
+def _full_draft_json(context: dict, cite_label: str, governing_law: str = "governing_law text") -> str:
     return json.dumps(
-        {"clauses": [{"clause_kind": k, "content": f"{k} text", "cites": [cite_label]} for k in CLAUSE_KINDS]}
+        {
+            "clauses": [
+                {"clause_kind": k, "content": governing_law if k == "governing_law" else f"{k} text", "cites": [cite_label]}
+                for k in CLAUSE_KINDS
+            ]
+        },
+        ensure_ascii=False,
     )
 
 
@@ -80,11 +89,51 @@ def test_parse_and_ground_rejects_malformed_drafts(raw):
         _parse_and_ground(raw, {"C1": _result(1)})
 
 
+@pytest.mark.parametrize(
+    "governing_law",
+    [
+        f"تسري على هذا العقد أحكام {RENT_LAW}.",
+        "تسري على هذا العقد أحكام قانون المالكين والمستأجرين رقم ٦٢ لسنة ١٩٥٣.",
+        "تسري على هذا العقد أحكام مجلة الأحكام العدلية.",  # no number/year to check
+    ],
+)
+def test_parse_and_ground_accepts_a_statute_named_by_a_cited_source(governing_law):
+    _parse_and_ground(_full_draft_json({}, "C1", governing_law), {"C1": _result(1)})
+
+
+@pytest.mark.parametrize(
+    "governing_law",
+    [
+        # The live regression: a real-sounding statute the knowledge base does not hold.
+        "تسري على هذا العقد أحكام قانون المالكين والمستأجرين رقم (7) لسنة 1958.",
+        # The right number with the wrong year is still a different statute.
+        "تسري على هذا العقد أحكام قانون المالكين والمستأجرين رقم (62) لسنة 1958.",
+        f"تسري على هذا العقد أحكام {RENT_LAW} وقانون رقم 11/1954.",
+    ],
+)
+def test_parse_and_ground_rejects_a_statute_not_among_the_cited_sources(governing_law):
+    with pytest.raises(_InvalidDraft, match="governing_law names"):
+        _parse_and_ground(_full_draft_json({}, "C1", governing_law), {"C1": _result(1)})
+
+
+def test_parse_and_ground_requires_the_named_statute_to_be_cited_by_the_clause_itself():
+    """Retrieved is not enough: the governing_law clause must cite an excerpt
+    from the statute it names, so the citation backs the name."""
+    mejelle = _result(2)
+    mejelle.source_title, mejelle.source_citation = "مجلة الأحكام العدلية", None
+    context = {"C1": mejelle, "C2": _result(1)}
+
+    with pytest.raises(_InvalidDraft, match="governing_law names"):
+        _parse_and_ground(_full_draft_json({}, "C1", f"تسري عليه أحكام {RENT_LAW}."), context)
+
+
 class _ScriptedLLM:
     def __init__(self, replies: list[str]):
         self._replies = list(replies)
+        self.prompts: list[str] = []
 
     async def chat(self, system: str, user: str, *, json_mode: bool = False, max_tokens: int | None = None) -> str:
+        self.prompts.append(user)
         return self._replies.pop(0)
 
 
@@ -133,6 +182,31 @@ def test_generate_contract_retries_then_succeeds(monkeypatch):
     assert {c.clause_kind for c in result.clauses} == set(CLAUSE_KINDS)
     assert result.citations[0].chunk_id == seeded.chunk_id
     assert result.body  # assembled from clause contents
+
+
+def test_generate_contract_retries_a_draft_that_names_an_uncited_statute(monkeypatch):
+    seeded = _result(1)
+
+    async def _fake_search(*args, **kwargs):
+        return [[seeded] for _ in kwargs["queries"]]
+
+    monkeypatch.setattr(gc, "search_many", _fake_search)
+    invented = "تسري على هذا العقد أحكام قانون المالكين والمستأجرين رقم (7) لسنة 1958."
+    grounded = f"تسري على هذا العقد أحكام {RENT_LAW}."
+    llm = _ScriptedLLM([_full_draft_json({}, "C1", invented), _full_draft_json({}, "C1", grounded)])
+
+    result = asyncio.run(
+        generate_contract(
+            pool=None, llm=llm, embedder=None, jurisdiction_id=JURISDICTION_ID,
+            contract_type="rent", parties=[{"name": "A"}], property={"address": "Gaza"},
+        )
+    )
+
+    [governing_law] = [c for c in result.clauses if c.clause_kind == "governing_law"]
+    assert governing_law.content == grounded
+    # The model is shown each excerpt's source, and told what it got wrong.
+    assert f"[C1] ({RENT_LAW})" in llm.prompts[0]
+    assert "رقم (7) لسنة 1958" in llm.prompts[1]
 
 
 def test_generate_contract_is_idempotent_for_the_same_input(monkeypatch):
