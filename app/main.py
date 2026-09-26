@@ -183,7 +183,8 @@ async def _send_callback(
                 provider=provider,
                 model_id=model_id,
                 # ponytail: the model id doubles as its version — DeepSeek's
-                # `deepseek-chat` is a moving alias and we keep nothing finer.
+                # `deepseek-flash` is a moving name (V4 then V4.1 behind it)
+                # and we keep nothing finer.
                 # Ceiling: two runs months apart can share a model_version
                 # while the weights changed. Upgrade: carry the response's
                 # system_fingerprint back through LLMProvider.chat.
