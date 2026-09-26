@@ -23,7 +23,12 @@ uv run pytest
 
 ## Layout
 
-- `app/main.py` — routes, trace-id + timing middleware
+- `app/main.py` — routes, trace-id + timing middleware, signed callback delivery
+- `app/jobs.py` — one interface per job kind (payload model, preflight, runner,
+  prompt version, budget); the wire `kind` enum is read off that table
+- `app/wire.py` — the contract with Laravel declared once: payload models, the
+  `error_code` enum, and the callback envelope. Held to `openapi.yaml` by
+  `tests/test_wire_contract.py`
 - `app/config.py` — env-driven settings
 - `app/security.py` — outbound HMAC signing of callbacks
 - `app/providers/` — `LLMProvider`/`EmbeddingProvider`/`RerankProvider`

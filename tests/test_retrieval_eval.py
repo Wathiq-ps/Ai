@@ -60,4 +60,4 @@ def test_shipped_golden_set_has_cross_law_queries():
 
     cross_law = [q for q in queries if q.law_type is None]
     assert cross_law, "golden set has no unfiltered (cross-law) queries"
-    assert {q.law_type for q in queries} >= {"rent", "tax", "ownership", None}
+    assert {q.law_type for q in queries} >= {"rent", "sale", "tax", "ownership", None}

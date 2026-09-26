@@ -180,10 +180,9 @@ latency matters more than agreement (see NFR-1.1 in *Failure modes*).
 
 ## `generate_contract`
 
-Only `contract_type: "rent"` can be drafted today — the drafting notes are
-written for a lease. Anything else fails with `unsupported_contract_type`
-rather than coming back in lease wording. Adding sale is new drafting notes
-(and ideally its registration law in the KB) on this side, not a wire change.
+`contract_type` is `"rent"` or `"sale"`, each with its own drafting notes.
+Anything else fails with `unsupported_contract_type` rather than coming back
+in another type's wording.
 
 Send `terms` (`price` as a major-unit string, `currency`, `price_unit`,
 `starts_on`, `ends_on`) with whatever you know. Anything left out becomes a
@@ -210,6 +209,72 @@ input was not supplied. These are deliberate, not failures — surface them as
 fields to fill. A draft is **not** signable: the opening formula, تمهيد,
 execution line and signature block are not part of `body`.
 
+### A sale
+
+A sale of land in the West Bank is transacted only at the Land Registry
+(دائرة تسجيل الأراضي — Law 49/1953 art. 2), so the draft is a **sale
+agreement** (اتفاقية بيع): the parties commit to sell, buy, pay, and complete
+the transfer at the registry by a deadline, and it says ownership passes only
+on registration. Don't present it to users as the transfer itself.
+
+```json
+{
+  "contract_type": "sale",
+  "parties": [{"role": "seller", "name": "..."}, {"role": "buyer", "name": "..."}],
+  "property": {"address": "...", "basin_name": "...", "basin_number": "...",
+               "parcel_number": "...", "apartment_number": "..."},
+  "terms": {"price": "120000.00", "currency": "JOD"}
+}
+```
+
+- `parties[].role` is `seller` / `buyer`: drafted as الطرف الأول (البائع) and
+  الطرف الثاني (المشتري).
+- `terms.price` is the total price. No `price_unit`, and no `starts_on` /
+  `ends_on` — those are lease fields. The handover date and the registry
+  transfer deadline have no field yet, so they come back as blanks, as do the
+  payment schedule (cash, deposit + balance, or instalments) and who pays the
+  registry fees.
+- `property` is passed to the model as-is. If you have the Land Registry
+  identifiers (اسم الحوض ورقمه، رقم القطعة، رقم الشقة), send them there under
+  any clear key; each one missing becomes a blank such as `[رقم القطعة]`.
+
+Send `contract_type: "sale"` to `analyze_contract` too: it then retrieves the
+sale, registry and tax laws and judges the contract on its price and its
+commitment to the registry transfer, not as a lease.
+
+## `reindex`
+
+UC-080. Rebuilds this jurisdiction's active knowledge-base version from every
+document already registered in `knowledge.documents`.
+
+Send a job with `"kind": "reindex"` and a payload that may carry an optional
+`tag` (a label for the new version) and `notes`:
+
+```json
+{ "job_id": "...", "kind": "reindex", "jurisdiction_id": "...",
+  "payload": { "tag": "2026-q3-laws" } }
+```
+
+The AI service **cannot create or verify sources** — it only indexes what Laravel
+has already registered. Here's the trap: an empty knowledge base is not an empty
+success. Reindex fails with `error_code: no_documents` rather than activating an
+empty version, because every retrieval after that would silently answer "no
+verified law found" and read as a legal conclusion instead of a wiring bug.
+
+On success `result` is:
+
+```json
+{ "kb_version_id": "...", "documents": 12 }
+```
+
+`documents` is how many documents went into the build, not the chunk count. The
+new version becomes the active one the moment the callback lands, so every job
+that started before it keeps the `kb_version_id` in its own callback's
+`provenance` — compare those before treating two reports as comparable.
+
+Reindex is deliberately not on the 60s budget: an embedding pass over a whole
+corpus is not a user-facing request.
+
 ## Failure modes
 
 | `status` | Meaning | What to do |
@@ -235,7 +300,7 @@ before suspecting the model.
 ## Not built yet
 
 - `answer_query` / `summarize` — Phase 3. Sending them is a `422`.
-- Drafting anything but rent (see `generate_contract`).
+- Drafting anything but rent and sale (see `generate_contract`).
 
 ## Local
 
