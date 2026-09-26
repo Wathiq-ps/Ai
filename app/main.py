@@ -3,9 +3,11 @@ import json
 import logging
 import time
 import uuid
+from typing import Literal
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, Request
+from pydantic import ValidationError
 
 from app.config import settings
 from app.db import get_pool
@@ -15,6 +17,7 @@ from app.logging_conf import configure_logging, new_trace_id, trace_id_var
 from app.providers import get_embedding_provider, get_llm_provider
 from app.security import sign_callback
 from app.usage import JobUsage, current_usage
+from app.wire import ErrorCode, JobCallback, Provenance, Usage
 
 configure_logging()
 logger = logging.getLogger("wathiq_ai")
@@ -82,9 +85,17 @@ async def build_job_context() -> JobContext:
     )
 
 
-async def _with_context(kind: JobKind, job: JobRequest) -> JobOutcome:
+async def _with_context(kind: JobKind, job: JobRequest, payload) -> JobOutcome:
     """Acquire, then run — one coroutine, so `wait_for`'s budget covers both."""
-    return await kind.run(await build_job_context(), job)
+    return await kind.run(await build_job_context(), job, payload)
+
+
+def _payload_errors(exc: ValidationError) -> str:
+    """Which field, and why — the message Laravel logs. Never shown to a user."""
+    return "; ".join(
+        f"{'.'.join(str(part) for part in error['loc']) or 'payload'}: {error['msg']}"
+        for error in exc.errors()
+    )
 
 
 async def _run_job(job: JobRequest, kind: JobKind) -> None:
@@ -101,7 +112,7 @@ async def _run_job(job: JobRequest, kind: JobKind) -> None:
     usage = JobUsage(job_id=str(job.job_id))
     token = current_usage.set(usage)
 
-    async def send(status: str, **fields) -> None:
+    async def send(status: Literal["succeeded", "failed", "timed_out"], **fields) -> None:
         report = usage.as_dict()
         logger.info(
             "job %s stage=total status=%s prompt_tokens=%d completion_tokens=%d ms=%d", job.job_id, status,
@@ -114,23 +125,26 @@ async def _run_job(job: JobRequest, kind: JobKind) -> None:
 
     budget = kind.timeout()
     try:
-        if kind.validate is not None:
-            # Before anything is acquired: a payload that cannot be served
-            # costs no connection and no provider client.
-            kind.validate(job.payload)
-        outcome = await asyncio.wait_for(_with_context(kind, job), timeout=budget)
+        # Validated before anything is acquired, and before the budget starts:
+        # a payload that cannot be served costs no connection and no provider
+        # client. The context build itself is inside the timed coroutine, since
+        # acquiring the pool and the clients is part of NFR-1.1's budget.
+        payload = kind.accept(job.payload)
+        outcome = await asyncio.wait_for(_with_context(kind, job, payload), timeout=budget)
+    except ValidationError as exc:
+        await send("failed", error_code=ErrorCode.INVALID_PAYLOAD, error=_payload_errors(exc))
     except TimeoutError:
         # ponytail: a call the timeout cancels mid-flight never returns its
         # usage, so a timed_out job's tokens under-count what the provider
         # bills. Fine for "where does the budget go"; not for billing.
-        await send("timed_out", error_code="timeout", error=f"exceeded {budget}s budget (NFR-1.1)")
+        await send("timed_out", error_code=ErrorCode.TIMEOUT, error=f"exceeded {budget}s budget (NFR-1.1)")
     except JobFailed as exc:
         await send("failed", error_code=exc.code, error=str(exc))
     except Exception as exc:
         logger.exception("job %s (%s) failed unexpectedly", job.job_id, job.kind)
-        await send("failed", error_code="internal", error=str(exc))
+        await send("failed", error_code=ErrorCode.INTERNAL, error=str(exc))
     else:
-        await send("succeeded", result=outcome.result, kb_version_id=str(outcome.kb_version_id))
+        await send("succeeded", result=outcome.result, kb_version_id=outcome.kb_version_id)
     finally:
         current_usage.reset(token)
 
@@ -139,42 +153,46 @@ async def _send_callback(
     job_id: uuid.UUID,
     kind: str,
     *,
-    status: str,
+    status: Literal["succeeded", "failed", "timed_out"],
     provider: str,
     model_id: str,
     prompt_version: str,
     usage: dict,
-    kb_version_id: str | None = None,
+    kb_version_id: uuid.UUID | None = None,
     result: dict | None = None,
     error: str | None = None,
-    error_code: str | None = None,
+    error_code: ErrorCode | None = None,
 ) -> None:
     """POST the JobCallback shape (openapi.yaml) to Laravel, HMAC-signed per
-    WATHIQ_AI_SPRINT_PLAN.md's Phase 0 scheme. Signs the exact bytes sent —
-    `content=raw_body`, never `json=...`, so the signature can't drift from
-    what Laravel actually receives on the wire."""
+    WATHIQ_AI_SPRINT_PLAN.md's Phase 0 scheme.
+
+    The body is `app.wire.JobCallback` serialised, not a dict written here by
+    hand: the field set and the enum values are the ones the wire-contract test
+    holds openapi.yaml to. It signs the exact bytes sent — `content=raw_body`,
+    never `json=...`, so the signature can't drift from what Laravel actually
+    receives on the wire."""
     raw_body = json.dumps(
-        {
-            "job_id": str(job_id),
-            "kind": kind,
-            "status": status,
-            "result": result,
-            "error": error,
-            "error_code": error_code,
-            "provenance": {
-                "provider": provider,
-                "model_id": model_id,
+        JobCallback(
+            job_id=job_id,
+            kind=kind,
+            status=status,
+            result=result,
+            error=error,
+            error_code=error_code,
+            provenance=Provenance(
+                provider=provider,
+                model_id=model_id,
                 # ponytail: the model id doubles as its version — DeepSeek's
                 # `deepseek-chat` is a moving alias and we keep nothing finer.
                 # Ceiling: two runs months apart can share a model_version
                 # while the weights changed. Upgrade: carry the response's
                 # system_fingerprint back through LLMProvider.chat.
-                "model_version": model_id,
-                "prompt_version": prompt_version,
-                "kb_version_id": kb_version_id,
-            },
-            "usage": usage,
-        }
+                model_version=model_id,
+                prompt_version=prompt_version,
+                kb_version_id=kb_version_id,
+            ),
+            usage=Usage(**usage),
+        ).model_dump(mode="json")
     ).encode()
 
     for attempt in range(CALLBACK_ATTEMPTS):

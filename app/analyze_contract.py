@@ -31,6 +31,7 @@ from app.generate_contract import (
 from app.knowledge import SearchResult, search_many
 from app.providers.base import EmbeddingProvider, LLMProvider
 from app.usage import stage
+from app.wire import ErrorCode
 
 FINDING_KINDS = ["missing_clause", "legal_conflict", "ambiguity", "suggestion", "risk"]
 
@@ -166,7 +167,7 @@ async def analyze_contract(
             content=content, k_per_topic=k_per_topic,
         )
     if not context:
-        raise AnalysisFailed("no verified law found for this jurisdiction", "no_verified_sources")
+        raise AnalysisFailed("no verified law found for this jurisdiction", ErrorCode.NO_VERIFIED_SOURCES)
 
     # search() only serves the one `active` kb_version per jurisdiction.
     kb_version_id = next(iter(context.values())).kb_version_id
@@ -182,7 +183,7 @@ async def analyze_contract(
     )
     usable = [r for r in results if not isinstance(r, BaseException)]
     if not usable:
-        raise AnalysisFailed(f"no sample produced valid structured output: {results[0]}", "llm_invalid_output")
+        raise AnalysisFailed(f"no sample produced valid structured output: {results[0]}", ErrorCode.LLM_INVALID_OUTPUT)
 
     with stage("vote", samples=len(usable)):
         coverage, judgements, summary_ar, summary_en = _vote(usable)
@@ -213,7 +214,7 @@ async def _one_analysis(llm, system: str, user: str, context: dict[str, SearchRe
             return _parse_and_ground(raw, context)
         except _InvalidAnalysis as exc:
             last_error = str(exc)
-    raise AnalysisFailed(f"LLM never produced valid structured output: {last_error}", "llm_invalid_output")
+    raise AnalysisFailed(f"LLM never produced valid structured output: {last_error}", ErrorCode.LLM_INVALID_OUTPUT)
 
 
 # Worst-first, so a tied vote on a clause fails safe rather than silently
