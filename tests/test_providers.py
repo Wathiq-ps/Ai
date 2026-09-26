@@ -1,6 +1,37 @@
 import asyncio
+from types import SimpleNamespace
 
-from app.providers.fake import FakeRerankProvider
+import pytest
+
+from app.providers.fake import FakeLLMProvider, FakeRerankProvider
+from app.providers.openai_compatible import (
+    LLMOutputTruncated,
+    OpenAICompatibleLLMProvider,
+)
+from app.usage import JobUsage, current_usage
+
+
+def _chat_response(finish_reason="stop", content='{"ok":1}', prompt_tokens=0, completion_tokens=0):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(finish_reason=finish_reason, message=SimpleNamespace(content=content))],
+        usage=SimpleNamespace(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            completion_tokens_details=SimpleNamespace(reasoning_tokens=4096),
+        ),
+    )
+
+
+def _llm(*responses) -> OpenAICompatibleLLMProvider:
+    """The real provider over a stub client that hands out `responses` in call order."""
+    queue = list(responses)
+
+    class _StubCompletions:
+        async def create(self, **kwargs):
+            return queue.pop(0)
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=_StubCompletions()))
+    return OpenAICompatibleLLMProvider(client, "deepseek-v4-flash")
 
 
 def test_fake_rerank_orders_by_query_word_overlap():
@@ -26,9 +57,7 @@ def test_fake_rerank_respects_top_n():
 
 def test_embedding_provider_batches_truncates_and_keeps_input_order():
     """Batching + the 2048->1536 truncation, against a stub client — no network."""
-    import asyncio
     import math
-    from types import SimpleNamespace
 
     from app.providers.openai_compatible import OpenAICompatibleEmbeddingProvider
 
@@ -64,38 +93,32 @@ def test_llm_provider_raises_instead_of_returning_a_truncated_reply():
     and the JSON parser then reports it as malformed JSON — which is the wrong
     thing to go looking at. Measured: deepseek-v4-flash spent all 4096 tokens
     on reasoning and emitted no content at all."""
-    import asyncio
-    from types import SimpleNamespace
-
-    import pytest
-
-    from app.providers.openai_compatible import (
-        LLMOutputTruncated,
-        OpenAICompatibleLLMProvider,
-    )
-
-    def _response(finish_reason, content):
-        return SimpleNamespace(
-            choices=[SimpleNamespace(finish_reason=finish_reason, message=SimpleNamespace(content=content))],
-            usage=SimpleNamespace(completion_tokens_details=SimpleNamespace(reasoning_tokens=4096)),
-        )
-
-    class _StubCompletions:
-        def __init__(self, response):
-            self._response = response
-
-        async def create(self, **kwargs):
-            return self._response
-
-    def _provider(response):
-        client = SimpleNamespace(chat=SimpleNamespace(completions=_StubCompletions(response)))
-        return OpenAICompatibleLLMProvider(client, "deepseek-v4-flash")
-
     with pytest.raises(LLMOutputTruncated) as excinfo:
-        asyncio.run(_provider(_response("length", "")).chat("s", "u", json_mode=True, max_tokens=4096))
+        asyncio.run(_llm(_chat_response("length", "")).chat("s", "u", json_mode=True, max_tokens=4096))
     assert "4096" in str(excinfo.value)
 
     # A normal reply is untouched, and empty content that did NOT hit the cap
     # still comes back as "" for the caller's JSON-repair loop to retry.
-    assert asyncio.run(_provider(_response("stop", '{"ok":1}')).chat("s", "u")) == '{"ok":1}'
-    assert asyncio.run(_provider(_response("stop", None)).chat("s", "u")) == ""
+    assert asyncio.run(_llm(_chat_response("stop", '{"ok":1}')).chat("s", "u")) == '{"ok":1}'
+    assert asyncio.run(_llm(_chat_response("stop", None)).chat("s", "u")) == ""
+
+
+def test_llm_provider_adds_every_calls_tokens_to_the_current_job():
+    """This sum is the callback's `usage`. A truncated reply is billed like
+    any other, so it counts even though chat() raises on it."""
+    llm = _llm(
+        _chat_response(prompt_tokens=1200, completion_tokens=300),
+        _chat_response("length", "", prompt_tokens=1200, completion_tokens=4096),
+    )
+    usage = JobUsage(job_id="j")
+
+    async def run():
+        current_usage.set(usage)
+        await llm.chat("s", "u")
+        with pytest.raises(LLMOutputTruncated):
+            await llm.chat("s", "u", max_tokens=4096)
+        await FakeLLMProvider().chat("s", "u")  # spends nothing, reports nothing
+
+    asyncio.run(run())
+
+    assert (usage.prompt_tokens, usage.completion_tokens) == (2400, 4396)

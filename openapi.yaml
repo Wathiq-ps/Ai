@@ -180,7 +180,7 @@ components:
 
     JobCallback:
       type: object
-      required: [job_id, kind, status, provenance]
+      required: [job_id, kind, status, provenance, usage]
       properties:
         job_id:
           type: string
@@ -207,6 +207,8 @@ components:
           description: Set when status != succeeded. Stable; store it in ai_jobs.error_code.
         provenance:
           $ref: "#/components/schemas/Provenance"
+        usage:
+          $ref: "#/components/schemas/Usage"
 
     GenerateContractResult:
       type: object
@@ -231,8 +233,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Citation"
-        usage:
-          $ref: "#/components/schemas/Usage"
 
     AnalyzeContractResult:
       type: object
@@ -291,8 +291,6 @@ components:
             checklist findings carry 1.0 by construction and are excluded, so
             this does not drift to 1.0 on contracts with many missing clauses.
             A contract with no judgement findings reports 1.0.
-        usage:
-          $ref: "#/components/schemas/Usage"
 
     ClauseCoverage:
       type: object
@@ -405,14 +403,33 @@ components:
 
     Usage:
       type: object
+      required: [prompt_tokens, completion_tokens, latency_ms]
       description: >
-        NOT POPULATED YET -- the service does not currently capture per-call
-        token counts or latency. Treat as absent and do not build reporting on
-        it until this note is removed.
+        What the job cost. On every callback, failed and timed_out included --
+        a failed job still spent its tokens. Store in ai_jobs.tokens_input,
+        tokens_output and latency_ms.
       properties:
         prompt_tokens:
           type: integer
+          minimum: 0
+          description: >
+            Input tokens summed over every LLM chat call the job made: every
+            analyze_contract sample and JSON-repair retry, every
+            generate_contract attempt. Embedding calls are not counted, so a
+            reindex reports 0. Also 0 when no LLM call was made -- an invalid
+            payload, an identical re-run served from cache, or the fake
+            provider. On timed_out, a call cut off mid-flight never reports
+            its usage, so the figure is a lower bound.
         completion_tokens:
           type: integer
+          minimum: 0
+          description: >
+            Output tokens, summed the same way (reasoning tokens included
+            where the model emits them).
         latency_ms:
           type: integer
+          minimum: 0
+          description: >
+            Wall time of the job's work in this service, from when it started
+            running to the first callback attempt (delivery retries are not
+            included). Compare against the 60s budget (NFR-1.1).

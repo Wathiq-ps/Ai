@@ -4,17 +4,24 @@ fake, and app.main.generate_contract/get_pool are monkeypatched per test."""
 
 import asyncio
 import json
+import logging
 import uuid
+from datetime import date
+from types import SimpleNamespace
 from typing import ClassVar
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+import app.analyze_contract as ac
+import app.generate_contract as gc
 from app import main
 from app.analyze_contract import AnalyzeContractResult, ClauseCoverage, Finding
 from app.config import settings
-from app.generate_contract import Citation, Clause, GenerateContractResult
+from app.generate_contract import CLAUSE_KINDS, Citation, Clause, GenerateContractResult
+from app.knowledge import SearchResult
+from app.providers.openai_compatible import OpenAICompatibleLLMProvider
 from app.security import sign_callback
 
 client = TestClient(main.app)
@@ -77,6 +84,11 @@ def test_missing_payload_fields_sends_failed_callback_with_valid_signature():
     assert body["error_code"] == "invalid_payload"
     assert "parties" in body["error"] and "property" in body["error"]
     assert body["provenance"]["kb_version_id"] is None
+    # `usage` is appended; the fields Laravel already reads keep their shape.
+    assert list(body) == ["job_id", "kind", "status", "result", "error", "error_code", "provenance", "usage"]
+    # Failed before any LLM call: nothing spent, but the time still counts.
+    assert body["usage"]["prompt_tokens"] == body["usage"]["completion_tokens"] == 0
+    assert isinstance(body["usage"]["latency_ms"], int) and body["usage"]["latency_ms"] >= 0
 
 
 def test_success_path_sends_signed_callback_with_result(monkeypatch):
@@ -278,6 +290,8 @@ def test_job_over_the_time_budget_reports_timed_out(monkeypatch):
     assert body["status"] == "timed_out"
     assert body["error_code"] == "timeout"
     assert "NFR-1.1" in body["error"]
+    assert body["usage"]["prompt_tokens"] == 0
+    assert body["usage"]["latency_ms"] > 0  # the budget it burned, not a placeholder
 
 
 def test_analyze_callback_carries_the_full_clause_checklist(monkeypatch):
@@ -323,3 +337,85 @@ def test_analyze_callback_carries_the_full_clause_checklist(monkeypatch):
     assert coverage[0]["status"] == "present" and coverage[0]["citations"] == []
     assert coverage[1]["status"] == "incomplete"
     assert coverage[1]["citations"][0]["chunk_id"] == str(chunk_id)
+
+
+# --- usage: the real agents over stub retrieval and a stub LLM endpoint -----
+
+
+def _stub_llm(*replies: tuple[str, int, int]) -> OpenAICompatibleLLMProvider:
+    """The real provider over a stub client. Each reply is (content,
+    prompt_tokens, completion_tokens), handed out in call order."""
+    queue = list(replies)
+
+    class _Completions:
+        async def create(self, **kwargs):
+            content, prompt_tokens, completion_tokens = queue.pop(0)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(finish_reason="stop", message=SimpleNamespace(content=content))],
+                usage=SimpleNamespace(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens),
+            )
+
+    return OpenAICompatibleLLMProvider(SimpleNamespace(chat=SimpleNamespace(completions=_Completions())), "stub")
+
+
+def _stub_agent_deps(monkeypatch, llm, agent_module) -> None:
+    hit = SearchResult(
+        chunk_id=uuid.uuid4(), document_id=uuid.uuid4(), source_id=uuid.uuid4(), kb_version_id=uuid.uuid4(),
+        content="Article text", score=0.9, law_type="rent", article="Article (1)",
+        effective_from=date(2020, 1, 1), effective_to=None, source_title="Test law", source_citation=None,
+    )
+
+    async def _search_many(*args, **kwargs):
+        return [[hit] for _ in kwargs["queries"]]
+
+    monkeypatch.setattr(agent_module, "search_many", _search_many)
+    monkeypatch.setattr(main, "get_llm_provider", lambda: llm)
+    monkeypatch.setattr(main, "get_embedding_provider", lambda: None)
+    monkeypatch.setattr(main, "get_pool", lambda: _async_none())
+
+
+def test_analyze_callback_sums_usage_over_every_sample_and_retry(monkeypatch, caplog):
+    """Three samples run as concurrent tasks and one of them needs a repair
+    retry: four calls, and every one of them must land in the same total."""
+    valid = json.dumps({
+        "summary_ar": "ملخص", "summary_en": "summary", "findings": [],
+        "coverage": {k: {"status": "present", "note": "مستوفٍ."} for k in CLAUSE_KINDS},
+    })
+    llm = _stub_llm(("not json", 1000, 40), (valid, 1100, 300), (valid, 1000, 310), (valid, 1000, 320))
+    _stub_agent_deps(monkeypatch, llm, ac)
+    caplog.set_level(logging.INFO, logger="wathiq_ai")
+
+    job_id = str(uuid.uuid4())
+    client.post(
+        "/v1/jobs",
+        json={"job_id": job_id, "kind": "analyze_contract", "jurisdiction_id": str(uuid.uuid4()),
+              "payload": {"content": "contract text"}},
+    )
+
+    [used] = _CapturingClient.instances
+    body = _verify_signature(used.calls[0])
+    assert body["status"] == "succeeded"
+    assert body["usage"]["prompt_tokens"] == 4100
+    assert body["usage"]["completion_tokens"] == 970
+    assert isinstance(body["usage"]["latency_ms"], int)
+
+    stages = [r.getMessage() for r in caplog.records if " stage=" in r.getMessage()]
+    assert all(line.startswith(f"job {job_id} stage=") for line in stages)
+    assert sum(" stage=retrieval " in line for line in stages) == 1
+    assert sum(" stage=llm sample=" in line for line in stages) == 4
+    assert any(" stage=vote samples=3 " in line for line in stages)
+    assert any(" stage=total status=succeeded prompt_tokens=4100 " in line for line in stages)
+
+
+def test_failed_generate_callback_still_reports_the_tokens_it_spent(monkeypatch):
+    """Three invalid drafts is a failed job, but three calls' worth of spend."""
+    llm = _stub_llm(("not json", 2000, 100), ("still not json", 2100, 200), ("{}", 2200, 300))
+    _stub_agent_deps(monkeypatch, llm, gc)
+
+    _post_job(str(uuid.uuid4()), {"contract_type": "rent", "parties": [{"name": "A"}], "property": {"address": "Gaza"}})
+
+    [used] = _CapturingClient.instances
+    body = _verify_signature(used.calls[0])
+    assert body["status"] == "failed"
+    assert body["error_code"] == "llm_invalid_output"
+    assert (body["usage"]["prompt_tokens"], body["usage"]["completion_tokens"]) == (6300, 600)

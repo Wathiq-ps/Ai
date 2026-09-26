@@ -22,6 +22,7 @@ from app.logging_conf import configure_logging, new_trace_id, trace_id_var
 from app.providers import get_embedding_provider, get_llm_provider
 from app.reindex import reindex
 from app.security import sign_callback
+from app.usage import JobUsage, current_usage
 
 configure_logging()
 logger = logging.getLogger("wathiq_ai")
@@ -107,16 +108,28 @@ async def _run_job(job: JobRequest, work, *, provider: str, model_id: str, promp
     for a real queue (e.g. Redis/RQ) if this ever needs to survive a process
     restart or run across multiple workers). `work` returns (result, kb_version_id).
     Never raises: every path ends in a signed callback POST, or a logged drop."""
+    # Set before the work starts, so every task it spawns (analyze's samples)
+    # adds its tokens to this same JobUsage — see app/usage.py.
+    usage = JobUsage(job_id=str(job.job_id))
+    token = current_usage.set(usage)
 
     async def send(status: str, **fields) -> None:
+        report = usage.as_dict()
+        logger.info(
+            "job %s stage=total status=%s prompt_tokens=%d completion_tokens=%d ms=%d", job.job_id, status,
+            report["prompt_tokens"], report["completion_tokens"], report["latency_ms"],
+        )
         await _send_callback(
             job.job_id, job.kind, status=status, provider=provider, model_id=model_id,
-            prompt_version=prompt_version, **fields,
+            prompt_version=prompt_version, usage=report, **fields,
         )
 
     try:
         result, kb_version_id = await asyncio.wait_for(work(), timeout=timeout)
     except TimeoutError:
+        # ponytail: a call the timeout cancels mid-flight never returns its
+        # usage, so a timed_out job's tokens under-count what the provider
+        # bills. Fine for "where does the budget go"; not for billing.
         await send("timed_out", error_code="timeout", error=f"exceeded {timeout}s budget (NFR-1.1)")
     except JobFailed as exc:
         await send("failed", error_code=exc.code, error=str(exc))
@@ -125,6 +138,8 @@ async def _run_job(job: JobRequest, work, *, provider: str, model_id: str, promp
         await send("failed", error_code="internal", error=str(exc))
     else:
         await send("succeeded", result=result, kb_version_id=str(kb_version_id))
+    finally:
+        current_usage.reset(token)
 
 
 async def _run_generate_contract(job: JobRequest) -> None:
@@ -274,6 +289,7 @@ async def _send_callback(
     provider: str,
     model_id: str,
     prompt_version: str,
+    usage: dict,
     kb_version_id: str | None = None,
     result: dict | None = None,
     error: str | None = None,
@@ -303,6 +319,7 @@ async def _send_callback(
                 "prompt_version": prompt_version,
                 "kb_version_id": kb_version_id,
             },
+            "usage": usage,
         }
     ).encode()
 

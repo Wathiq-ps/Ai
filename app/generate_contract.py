@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from app.errors import JobFailed
 from app.knowledge import SearchResult, search_many
 from app.providers.base import EmbeddingProvider, LLMProvider
+from app.usage import stage
 
 CLAUSE_KINDS = [
     "parties", "subject", "price", "payment_terms", "duration", "obligations",
@@ -164,10 +165,11 @@ async def generate_contract(
     if cache_key in _draft_cache:
         return _draft_cache[cache_key]
 
-    context = await _retrieve_context(
-        pool, embedder, jurisdiction_id=jurisdiction_id, contract_type=contract_type,
-        property=property, k_per_clause=k_per_clause,
-    )
+    with stage("retrieval"):
+        context = await _retrieve_context(
+            pool, embedder, jurisdiction_id=jurisdiction_id, contract_type=contract_type,
+            property=property, k_per_clause=k_per_clause,
+        )
     if not context:
         raise GenerationFailed("no verified law found for this jurisdiction/contract type", "no_verified_sources")
 
@@ -178,9 +180,10 @@ async def generate_contract(
     system, user = _build_prompt(contract_type, parties, property, terms, language, context)
 
     last_error = ""
-    for _ in range(MAX_ATTEMPTS):
+    for attempt in range(1, MAX_ATTEMPTS + 1):
         prompt = user if not last_error else f"{user}\n\nYour last reply was invalid: {last_error}. Reply with corrected JSON only."
-        raw = await llm.chat(system, prompt, json_mode=True, max_tokens=16384)
+        with stage("llm", attempt=attempt):
+            raw = await llm.chat(system, prompt, json_mode=True, max_tokens=16384)
         try:
             clauses, citations = _parse_and_ground(raw, context)
         except _InvalidDraft as exc:

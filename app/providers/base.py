@@ -12,7 +12,10 @@ class LLMProvider(ABC):
         OpenAI-compatible `response_format={"type": "json_object"}`) where
         supported — callers must still validate the result, this only
         improves the odds. The prompt itself must still mention "json" and
-        show the desired shape (DeepSeek requires this)."""
+        show the desired shape (DeepSeek requires this).
+
+        A provider that spends tokens reports them via app.usage.add_tokens,
+        which is what the job callback's `usage` block sums."""
 
 
 class EmbeddingProvider(ABC):

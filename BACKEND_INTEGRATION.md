@@ -39,7 +39,8 @@ Callback body, every kind, every outcome:
     "model_version": "deepseek-chat",
     "prompt_version": "analyze_contract-v1",
     "kb_version_id": "..."     // null unless succeeded
-  }
+  },
+  "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0}  // every outcome
 }
 ```
 
@@ -47,6 +48,15 @@ Callback body, every kind, every outcome:
 are how you answer "why did this contract say that" six months from now. The
 knowledge base is versioned and the active version changes on every reindex —
 a result is only reproducible against the version that produced it.
+
+`usage` is on every callback, failures and timeouts included, and maps
+straight onto the `tokens_input`, `tokens_output` and `latency_ms` columns
+`app.ai_jobs` already has. The token counts are summed over every LLM call the
+job made — all three analyze samples and any JSON-repair retries; embeddings
+are not counted — and `latency_ms` is the job's wall time here, excluding
+callback delivery. Zero tokens means no LLM call was made (a bad payload, a
+reindex, or an identical re-run served from cache), not that the field is
+missing.
 
 ## Verifying the callback
 
@@ -219,7 +229,6 @@ before suspecting the model.
 ## Not built yet
 
 - `answer_query` / `summarize` — Phase 3. Sending them is a `422`.
-- `usage` (token counts, latency) — declared in `openapi.yaml`, never sent.
 - Drafting anything but rent (see `generate_contract`).
 
 ## Local
