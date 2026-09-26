@@ -6,14 +6,15 @@ tell you — what the fields *mean*, and what will bite you.
 
 ## The shape of an exchange
 
-You `POST /v1/jobs` with `X-API-Key`. You get **202 immediately** — that
+You `POST /v1/jobs` (no auth header — call it over Railway's private
+network, `http://ai.railway.internal:8001`). You get **202 immediately** — that
 response carries no result, only `{job_id, status: "running"}`. The answer
 arrives later as a signed `POST` to `LARAVEL_CALLBACK_URL`. There is no
 polling endpoint. If you never get a callback, the job is lost (see
 *Failure modes*).
 
 ```
-Laravel ──POST /v1/jobs (X-API-Key)──▶ AI          202 {job_id, status:running}
+Laravel ──POST /v1/jobs────────────▶ AI          202 {job_id, status:running}
 Laravel ◀──POST callback (HMAC)────── AI          the actual result
 ```
 

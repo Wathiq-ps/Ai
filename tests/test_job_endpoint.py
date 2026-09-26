@@ -46,7 +46,6 @@ class _CapturingClient:
 def _capture_httpx(monkeypatch):
     _CapturingClient.instances.clear()
     monkeypatch.setattr(main.httpx, "AsyncClient", _CapturingClient)
-    settings.ai_service_api_key = "test-key"
     settings.ai_webhook_secret = "test-secret"
     yield
 
@@ -54,7 +53,6 @@ def _capture_httpx(monkeypatch):
 def _post_job(job_id: str, payload: dict) -> object:
     return client.post(
         "/v1/jobs",
-        headers={"X-API-Key": "test-key"},
         json={"job_id": job_id, "kind": "generate_contract", "jurisdiction_id": str(uuid.uuid4()), "payload": payload},
     )
 
@@ -150,7 +148,6 @@ def test_analyze_contract_sends_signed_callback_with_findings_and_score(monkeypa
     job_id = str(uuid.uuid4())
     response = client.post(
         "/v1/jobs",
-        headers={"X-API-Key": "test-key"},
         json={
             "job_id": job_id,
             "kind": "analyze_contract",
@@ -173,7 +170,6 @@ def test_analyze_contract_sends_signed_callback_with_findings_and_score(monkeypa
 def test_analyze_contract_without_content_fails_closed():
     response = client.post(
         "/v1/jobs",
-        headers={"X-API-Key": "test-key"},
         json={"job_id": str(uuid.uuid4()), "kind": "analyze_contract", "jurisdiction_id": str(uuid.uuid4()), "payload": {}},
     )
     assert response.status_code == 202
@@ -188,7 +184,6 @@ def test_analyze_contract_without_content_fails_closed():
 def test_unsupported_job_kind_is_accepted_but_not_dispatched():
     response = client.post(
         "/v1/jobs",
-        headers={"X-API-Key": "test-key"},
         json={"job_id": str(uuid.uuid4()), "kind": "summarize", "jurisdiction_id": str(uuid.uuid4()), "payload": {}},
     )
     assert response.status_code == 202
@@ -245,7 +240,6 @@ def test_analyze_callback_carries_the_full_clause_checklist(monkeypatch):
     _CapturingClient.instances.clear()
     response = client.post(
         "/v1/jobs",
-        headers={"X-API-Key": "test-key"},
         json={
             "job_id": str(uuid.uuid4()),
             "kind": "analyze_contract",

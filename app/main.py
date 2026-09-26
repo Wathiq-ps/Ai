@@ -5,7 +5,7 @@ import time
 import uuid
 
 import httpx
-from fastapi import BackgroundTasks, Depends, FastAPI, Request
+from fastapi import BackgroundTasks, FastAPI, Request
 from pydantic import BaseModel
 
 from app.analyze_contract import RISK_RUBRIC_VERSION, AnalysisFailed, analyze_contract
@@ -15,7 +15,7 @@ from app.generate_contract import GenerationFailed, generate_contract
 from app.logging_conf import configure_logging, new_trace_id, trace_id_var
 from app.providers import get_embedding_provider, get_llm_provider
 from app.reindex import ReindexFailed, reindex
-from app.security import require_api_key, sign_callback
+from app.security import sign_callback
 
 configure_logging()
 logger = logging.getLogger("wathiq_ai")
@@ -55,7 +55,11 @@ ANALYZE_CONTRACT_PROMPT_VERSION = "analyze_contract-v1"
 REINDEX_PROMPT_VERSION = "reindex-v1"  # no prompt; provenance wants a version string
 
 
-@app.post("/v1/jobs", status_code=202, dependencies=[Depends(require_api_key)])
+# ponytail: no inbound auth. Laravel calls this over Railway's private network
+# (ai.railway.internal); anything that can reach the port can enqueue jobs and
+# spend LLM credit. Put an X-API-Key check back (git history: require_api_key
+# in app/security.py) before a public domain or a second caller is relied on.
+@app.post("/v1/jobs", status_code=202)
 async def create_job(job: JobRequest, background_tasks: BackgroundTasks):
     logger.info("received job %s kind=%s", job.job_id, job.kind)
     if job.kind == "generate_contract":

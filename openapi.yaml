@@ -4,7 +4,8 @@ info:
   version: "0.1.0"
   description: >
     Wire contract between the Laravel back-end and the AI Legal Engine (FastAPI).
-    See AI/WATHIQ_AI_SPRINT_PLAN.md's Phase 0 section for the HMAC/API-key scheme this implements.
+    See AI/WATHIQ_AI_SPRINT_PLAN.md's Phase 0 section for the HMAC callback scheme this implements.
+    POST /v1/jobs carries no auth; it is meant to be reached over the private network only.
 
 servers:
   - url: http://localhost:8001
@@ -30,8 +31,7 @@ paths:
   /v1/jobs:
     post:
       summary: Enqueue an AI job (Laravel → AI service)
-      security:
-        - ApiKeyAuth: []
+      security: []
       requestBody:
         required: true
         content:
@@ -52,8 +52,6 @@ paths:
                   status:
                     type: string
                     enum: [running]
-        "401":
-          description: Missing/invalid API key
         "422":
           description: Malformed request
 
@@ -86,10 +84,6 @@ paths:
 
 components:
   securitySchemes:
-    ApiKeyAuth:
-      type: apiKey
-      in: header
-      name: X-API-Key
     HmacAuth:
       type: apiKey
       in: header

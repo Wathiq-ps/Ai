@@ -25,7 +25,7 @@ uv run pytest
 
 - `app/main.py` — routes, trace-id + timing middleware
 - `app/config.py` — env-driven settings
-- `app/security.py` — inbound API-key check, outbound HMAC signing
+- `app/security.py` — outbound HMAC signing of callbacks
 - `app/providers/` — `LLMProvider`/`EmbeddingProvider`/`RerankProvider`
   interfaces; fake adapters plus one real OpenAI-compatible adapter used
   against OpenRouter (embeddings: nemotron-3-embed-1b) and DeepSeek (LLM)
