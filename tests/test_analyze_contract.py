@@ -35,6 +35,8 @@ def _result(seed: int = 1) -> SearchResult:
         article=f"Article ({seed})",
         effective_from=date(2020, 1, 1),
         effective_to=None,
+        source_title="Test law",
+        source_citation=None,
     )
 
 
