@@ -6,9 +6,13 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # NFR-1.1: a contract must be generated/analysed within 60s. Reindex is
-    # deliberately not bounded by this — a full-corpus rebuild is minutes.
-    job_timeout_seconds: float = 60.0
+    # NFR-1.1 asks for a contract generated/analysed within 60s. The budget
+    # sits 10s above it: a 3-sample analyze of the demo lease measured 29-31s
+    # on most runs but 61.0s on one (2026-09-26), and a timeout at exactly 60s
+    # turns that slow run into a failed job the lawyer must resubmit. Laravel's
+    # own no-callback check is 3 minutes, so it still fires well after this.
+    # Reindex is deliberately not bounded by this — a rebuild is minutes.
+    job_timeout_seconds: float = 70.0
     ai_webhook_secret: str = ""
     laravel_callback_url: str = "http://localhost:8000/api/v1/ai/callback"
 

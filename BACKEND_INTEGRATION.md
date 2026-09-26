@@ -280,12 +280,12 @@ corpus is not a user-facing request.
 | `status` | Meaning | What to do |
 |---|---|---|
 | `failed` | Fail-closed. `error_code` says why: `invalid_payload`, `unsupported_contract_type`, `no_verified_sources`, `llm_invalid_output`, `internal` (`no_documents` for reindex) | Return the contract to `draft`. `error` is safe to log, not to show a user |
-| `timed_out` | Exceeded the 60s budget (NFR-1.1); `error_code` is `timeout` | Same as failed. Retrying may succeed — it is a latency limit, not a verdict |
+| `timed_out` | Exceeded the 70s job budget (NFR-1.1's 60s plus margin); `error_code` is `timeout` | Same as failed. Retrying may succeed — it is a latency limit, not a verdict |
 | *no callback* | The AI service died mid-job, or delivery failed 3 times | We retry delivery up to 3 times (network error or 5xx), re-signed each time; a 4xx from you is final. You still need your own timeout to move a stuck job out of `running` |
 
 A `timed_out` is not always the model's fault: the embedding provider is on a
 free tier that answers 429 past 20 requests/minute, and our client waits it
-out in 20s steps. A burst of jobs can therefore spend the whole 60s budget in
+out in 20s steps. A burst of jobs can therefore spend the whole 70s budget in
 retrieval backoff before the LLM is ever called. If timeouts cluster, check
 the embedding quota before blaming the analysis.
 

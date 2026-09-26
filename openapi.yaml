@@ -484,4 +484,5 @@ components:
           description: >
             Wall time of the job's work in this service, from when it started
             running to the first callback attempt (delivery retries are not
-            included). Compare against the 60s budget (NFR-1.1).
+            included). Compare against the 70s job budget (NFR-1.1's
+            60s plus margin).

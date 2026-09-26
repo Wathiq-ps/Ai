@@ -82,8 +82,9 @@ def _unbounded() -> None:
 
 
 def _job_budget() -> float:
-    """NFR-1.1's 60s budget. Read per call, not at import, so a config change
-    (or a test moving it) is what the next job actually gets."""
+    """The job budget (config.job_timeout_seconds: NFR-1.1's 60s plus margin).
+    Read per call, not at import, so a config change (or a test moving it) is
+    what the next job actually gets."""
     return settings.job_timeout_seconds
 
 
