@@ -7,6 +7,7 @@ import json
 import uuid
 from typing import ClassVar
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -36,8 +37,7 @@ class _CapturingClient:
         self.calls.append({"url": url, "content": content, "headers": headers})
 
         class _Resp:
-            def raise_for_status(self_inner):
-                pass
+            status_code = 200
 
         return _Resp()
 
@@ -74,6 +74,7 @@ def test_missing_payload_fields_sends_failed_callback_with_valid_signature():
 
     assert body["job_id"] == job_id
     assert body["status"] == "failed"
+    assert body["error_code"] == "invalid_payload"
     assert "parties" in body["error"] and "property" in body["error"]
     assert body["provenance"]["kb_version_id"] is None
 
@@ -94,7 +95,7 @@ def test_success_path_sends_signed_callback_with_result(monkeypatch):
 
     job_id = str(uuid.uuid4())
     response = _post_job(
-        job_id, {"contract_type": "sale", "parties": [{"name": "A"}], "property": {"address": "Gaza"}}
+        job_id, {"contract_type": "rent", "parties": [{"name": "A"}], "property": {"address": "Gaza"}}
     )
     assert response.status_code == 202
 
@@ -105,8 +106,11 @@ def test_success_path_sends_signed_callback_with_result(monkeypatch):
     assert body["status"] == "succeeded"
     assert body["result"]["clauses"] == [{"clause_kind": "parties", "content": "x"}]
     assert body["result"]["citations"][0]["source_id"] == str(source_id)
+    assert body["error_code"] is None
     assert body["provenance"]["kb_version_id"] == str(kb_version_id)
     assert body["provenance"]["prompt_version"] == main.GENERATE_CONTRACT_PROMPT_VERSION
+    # ai_jobs_success_has_provenance refuses a succeeded row without it.
+    assert body["provenance"]["model_version"]
 
 
 def test_analyze_contract_sends_signed_callback_with_findings_and_score(monkeypatch):
@@ -181,13 +185,74 @@ def test_analyze_contract_without_content_fails_closed():
     assert "content" in body["error"]
 
 
-def test_unsupported_job_kind_is_accepted_but_not_dispatched():
+def test_job_kind_without_a_worker_is_rejected_up_front():
+    """A 202 here would mean a callback that never comes."""
     response = client.post(
         "/v1/jobs",
         json={"job_id": str(uuid.uuid4()), "kind": "summarize", "jurisdiction_id": str(uuid.uuid4()), "payload": {}},
     )
+    assert response.status_code == 422
+    assert _CapturingClient.instances == []
+
+
+def test_contract_type_that_cannot_be_drafted_fails_with_its_own_code():
+    response = _post_job(
+        str(uuid.uuid4()), {"contract_type": "sale", "parties": [{"name": "A"}], "property": {"address": "Gaza"}}
+    )
     assert response.status_code == 202
-    assert _CapturingClient.instances == []  # no callback attempted -- no worker for this kind
+
+    [used] = _CapturingClient.instances
+    body = _verify_signature(used.calls[0])
+    assert body["status"] == "failed"
+    assert body["error_code"] == "unsupported_contract_type"
+
+
+def test_a_repeated_job_id_is_accepted_but_runs_once():
+    """Laravel re-POSTs when our 202 is slow to arrive; that must not double the work."""
+    job_id = str(uuid.uuid4())
+    first = _post_job(job_id, {})
+    second = _post_job(job_id, {})
+
+    assert first.status_code == second.status_code == 202
+    assert len(_CapturingClient.instances) == 1
+
+
+def test_callback_is_retried_after_a_network_error(monkeypatch):
+    monkeypatch.setattr(main, "CALLBACK_BACKOFF_SECONDS", (0, 0))
+    attempts = []
+
+    class _FlakyClient(_CapturingClient):
+        async def post(self, url, content, headers):
+            attempts.append(headers["X-Wathiq-Signature"])
+            if len(attempts) == 1:
+                raise httpx.ConnectError("laravel restarting")
+            return await super().post(url, content, headers)
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", _FlakyClient)
+    _post_job(str(uuid.uuid4()), {})
+
+    assert len(attempts) == 2
+    delivered = [c for client in _CapturingClient.instances for c in client.calls]
+    assert _verify_signature(delivered[0])["error_code"] == "invalid_payload"
+
+
+def test_callback_rejected_by_laravel_is_not_retried(monkeypatch):
+    monkeypatch.setattr(main, "CALLBACK_BACKOFF_SECONDS", (0, 0))
+    attempts = []
+
+    class _RejectingClient(_CapturingClient):
+        async def post(self, url, content, headers):
+            attempts.append(url)
+
+            class _Resp:
+                status_code = 401
+
+            return _Resp()
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", _RejectingClient)
+    _post_job(str(uuid.uuid4()), {})
+
+    assert len(attempts) == 1
 
 
 async def _async_none():
@@ -203,7 +268,7 @@ def test_job_over_the_time_budget_reports_timed_out(monkeypatch):
     monkeypatch.setattr(settings, "job_timeout_seconds", 0.01)
 
     response = _post_job(
-        str(uuid.uuid4()), {"contract_type": "sale", "parties": [{"name": "A"}], "property": {"address": "Gaza"}}
+        str(uuid.uuid4()), {"contract_type": "rent", "parties": [{"name": "A"}], "property": {"address": "Gaza"}}
     )
     assert response.status_code == 202
 
@@ -211,6 +276,7 @@ def test_job_over_the_time_budget_reports_timed_out(monkeypatch):
     [call] = used.calls
     body = _verify_signature(call)
     assert body["status"] == "timed_out"
+    assert body["error_code"] == "timeout"
     assert "NFR-1.1" in body["error"]
 
 

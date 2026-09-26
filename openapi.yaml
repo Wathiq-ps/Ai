@@ -53,21 +53,15 @@ paths:
                     type: string
                     enum: [running]
         "422":
-          description: Malformed request
+          description: Malformed request, or a kind this service has no worker for
 
-  /v1/jobs/{job_id}/callback:
+  /api/v1/ai/callback:
     post:
       summary: >
         Documents the shape the AI service POSTs to Laravel's inbound webhook
-        endpoint when a job finishes. Not served by the AI service itself —
-        implemented on the Laravel side (plan §1E.4).
-      parameters:
-        - name: job_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
+        (LARAVEL_CALLBACK_URL) when a job finishes. Not served by the AI
+        service itself. Delivery is retried up to 3 times on a network error
+        or 5xx, re-signed each time; a 4xx is final.
       security:
         - HmacAuth: []
       requestBody:
@@ -101,7 +95,10 @@ components:
           description: Same id as app.ai_jobs.id — the AI service does not generate this.
         kind:
           type: string
-          enum: [generate_contract, analyze_contract, answer_query, summarize]
+          enum: [generate_contract, analyze_contract, reindex]
+          description: >-
+            Anything else is a 422. The same job_id sent twice gets a 202 both
+            times but runs once (per process).
         jurisdiction_id:
           type: string
           format: uuid
@@ -116,13 +113,38 @@ components:
       properties:
         contract_type:
           type: string
-          enum: [sale, rent]
+          enum: [rent]
+          description: >-
+            Only rent can be drafted today. Any other value is accepted on
+            the wire and fails with error_code unsupported_contract_type.
         parties:
           type: array
           items:
             type: object
         property:
           type: object
+        terms:
+          type: object
+          description: >-
+            Optional. Values the draft must use instead of leaving a
+            [bracketed blank]. Pass what you have; omit what you don't.
+          properties:
+            price:
+              type: string
+              example: "450.00"
+              description: Major units as a string, not minor units.
+            currency:
+              type: string
+              example: JOD
+            price_unit:
+              type: string
+              example: per_month
+            starts_on:
+              type: string
+              format: date
+            ends_on:
+              type: string
+              format: date
         language:
           type: string
           enum: [ar, en]
@@ -148,13 +170,13 @@ components:
           type: integer
           minimum: 1
           maximum: 3
-          default: 1
+          default: 3
           description: >-
             Optional self-consistency vote size. >1 runs that many analyses
-            over the same retrieved excerpts and keeps what they agree on —
-            real stability gain, ~2x wall clock, so use only for a specific
-            job you know can afford it, not general traffic. See
-            BACKEND_INTEGRATION.md's Reproducibility section.
+            over the same retrieved excerpts and keeps what they agree on.
+            3 measured ~36s end to end against the 60s budget; send 1 for a
+            faster, noisier report. See BACKEND_INTEGRATION.md's
+            Reproducibility section.
 
     JobCallback:
       type: object
@@ -165,7 +187,7 @@ components:
           format: uuid
         kind:
           type: string
-          enum: [generate_contract, analyze_contract, answer_query, summarize]
+          enum: [generate_contract, analyze_contract, reindex]
         status:
           type: string
           enum: [succeeded, failed, timed_out]
@@ -176,7 +198,13 @@ components:
         error:
           type: string
           nullable: true
-          description: Set when status != succeeded.
+          description: Set when status != succeeded. For logs, not for users.
+        error_code:
+          type: string
+          nullable: true
+          enum: [invalid_payload, unsupported_contract_type, no_verified_sources,
+                 llm_invalid_output, timeout, no_documents, internal]
+          description: Set when status != succeeded. Stable; store it in ai_jobs.error_code.
         provenance:
           $ref: "#/components/schemas/Provenance"
 
@@ -242,8 +270,8 @@ components:
             the share of the 11-clause checklist that is absent (weight 1) or
             incomplete (weight 0.5), worth at most 55; plus the model's
             judgement findings scored by severity, worth at most 45. Computed by
-            the service, never asked of the model. Bands used by the UI:
-            0-29 low, 30-59 medium, 60+ high.
+            the service, never asked of the model. The band shown to users is
+            Laravel's (contract_analyses.risk_band, generated from this score).
         risk_rubric_version:
           type: string
           example: risk-v2
@@ -354,21 +382,26 @@ components:
 
     Provenance:
       type: object
-      required: [provider, model_id, prompt_version, kb_version_id]
+      required: [provider, model_id, model_version, prompt_version, kb_version_id]
       properties:
         provider:
           type: string
-          example: azure-openai
+          example: deepseek
         model_id:
           type: string
-          example: gpt-4o
+          example: deepseek-chat
         model_version:
           type: string
+          description: >-
+            Today the same as model_id (the provider exposes no finer
+            version). ai_jobs refuses a succeeded row without it.
         prompt_version:
           type: string
         kb_version_id:
           type: string
           format: uuid
+          nullable: true
+          description: Null when the job did not succeed.
 
     Usage:
       type: object

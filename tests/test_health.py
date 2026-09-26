@@ -2,6 +2,7 @@ import uuid
 
 from fastapi.testclient import TestClient
 
+from app import main
 from app.main import app
 
 client = TestClient(app)
@@ -13,7 +14,9 @@ def test_health():
     assert response.json() == {"status": "ok"}
 
 
-def test_job_round_trips():
+def test_job_round_trips(monkeypatch):
+    # The background callback has nowhere to go here; don't wait out its retries.
+    monkeypatch.setattr(main, "CALLBACK_BACKOFF_SECONDS", (0, 0))
     job_id = str(uuid.uuid4())
     response = client.post(
         "/v1/jobs",

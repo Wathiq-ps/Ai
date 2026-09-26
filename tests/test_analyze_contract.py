@@ -338,3 +338,9 @@ def test_vote_keeps_the_coverage_note_from_a_sample_that_voted_that_way():
 
     assert warranties.status == "incomplete"
     assert warranties.note == "incomplete note"
+
+
+def test_every_clause_kind_has_an_arabic_label():
+    from app.analyze_contract import CLAUSE_LABELS_AR
+
+    assert set(CLAUSE_LABELS_AR) == set(CLAUSE_KINDS)

@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     # deliberately not bounded by this — a full-corpus rebuild is minutes.
     job_timeout_seconds: float = 60.0
     ai_webhook_secret: str = ""
-    laravel_callback_url: str = "http://localhost:8000/api/ai/callback"
+    laravel_callback_url: str = "http://localhost:8000/api/v1/ai/callback"
 
     # Postgres — the `wathiq_ai` restricted role (knowledge.* only, see
     # 2026_08_04_990000_grant_wathiq_privileges.php). Blank = get_pool() raises.

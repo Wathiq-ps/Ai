@@ -302,3 +302,29 @@ def test_generate_contract_falls_back_to_general_for_an_unknown_contract_type(mo
     )
 
     assert [c["law_type"] for c in seen] == [["general"]]
+
+
+def test_supplied_terms_reach_the_prompt_and_the_cache_key(monkeypatch):
+    """Laravel knows the rent and the dates; the draft must use them instead of
+    leaving [bracketed blanks] the analysis then flags as incomplete."""
+    prompts: list[str] = []
+
+    async def _fake_search(*args, **kwargs):
+        return [[_result(1)] for _ in kwargs["queries"]]
+
+    monkeypatch.setattr(gc, "search_many", _fake_search)
+
+    class _LLM:
+        async def chat(self, system, user, *, json_mode=False, max_tokens=None):
+            prompts.append(user)
+            return _full_draft_json({}, "C1")
+
+    kwargs = dict(
+        pool=None, llm=_LLM(), embedder=None, jurisdiction_id=JURISDICTION_ID, contract_type="rent",
+        parties=[{"name": "A"}], property={"address": "Ramallah"},
+    )
+    asyncio.run(generate_contract(**kwargs, terms={"price": "450.00", "currency": "JOD"}))
+    asyncio.run(generate_contract(**kwargs, terms={"price": "500.00", "currency": "JOD"}))
+
+    assert '"price": "450.00"' in prompts[0]
+    assert len(prompts) == 2  # different terms, so not served from the draft cache
