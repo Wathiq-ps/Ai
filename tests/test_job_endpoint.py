@@ -5,16 +5,19 @@ fake, and app.main.generate_contract/get_pool are monkeypatched per test."""
 import asyncio
 import json
 import uuid
+from datetime import date
 from typing import ClassVar
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+import app.generate_contract as gc
 from app import main
 from app.analyze_contract import AnalyzeContractResult, ClauseCoverage, Finding
 from app.config import settings
-from app.generate_contract import Citation, Clause, GenerateContractResult
+from app.generate_contract import CLAUSE_KINDS, Citation, Clause, GenerateContractResult
+from app.knowledge import SearchResult
 from app.security import sign_callback
 
 client = TestClient(main.app)
@@ -197,7 +200,7 @@ def test_job_kind_without_a_worker_is_rejected_up_front():
 
 def test_contract_type_that_cannot_be_drafted_fails_with_its_own_code():
     response = _post_job(
-        str(uuid.uuid4()), {"contract_type": "sale", "parties": [{"name": "A"}], "property": {"address": "Gaza"}}
+        str(uuid.uuid4()), {"contract_type": "gift", "parties": [{"name": "A"}], "property": {"address": "Gaza"}}
     )
     assert response.status_code == 202
 
@@ -205,6 +208,48 @@ def test_contract_type_that_cannot_be_drafted_fails_with_its_own_code():
     body = _verify_signature(used.calls[0])
     assert body["status"] == "failed"
     assert body["error_code"] == "unsupported_contract_type"
+
+
+def test_a_sale_is_drafted_end_to_end(monkeypatch):
+    """The payload BACKEND_INTEGRATION.md tells Laravel to send for a sale, through
+    the real generate_contract — only retrieval and the LLM are stubbed."""
+    law = SearchResult(
+        chunk_id=uuid.uuid4(), document_id=uuid.uuid4(), source_id=uuid.uuid4(), kb_version_id=uuid.uuid4(),
+        content="ينحصر إجراء جميع معاملات التصرف في الأراضي ... في دوائر تسجيل الأراضي.", score=0.9,
+        law_type="sale", article="المادة (2)", effective_from=date(1953, 1, 1), effective_to=None,
+        source_title="قانون التصرف في الأموال غير المنقولة رقم (49) لسنة 1953", source_citation=None,
+    )
+    systems: list[str] = []
+
+    class _LLM:
+        async def chat(self, system, user, *, json_mode=False, max_tokens=None):
+            systems.append(system)
+            return json.dumps(
+                {"clauses": [{"clause_kind": k, "content": f"{k} نص", "cites": ["C1"]} for k in CLAUSE_KINDS]}
+            )
+
+    async def _search(*args, **kwargs):
+        return [[law] for _ in kwargs["queries"]]
+
+    monkeypatch.setattr(gc, "search_many", _search)
+    monkeypatch.setattr(main, "get_llm_provider", _LLM)
+    monkeypatch.setattr(main, "get_embedding_provider", lambda: None)
+    monkeypatch.setattr(main, "get_pool", lambda: _async_none())
+    payload = {
+        "contract_type": "sale",
+        "parties": [{"role": "seller", "name": "A"}, {"role": "buyer", "name": "B"}],
+        "property": {"address": "Ramallah", "parcel_number": "12"},
+        "terms": {"price": "120000.00", "currency": "JOD"},
+    }
+
+    assert _post_job(str(uuid.uuid4()), payload).status_code == 202
+
+    [used] = _CapturingClient.instances
+    body = _verify_signature(used.calls[0])
+    assert body["status"] == "succeeded", body["error"]
+    assert [c["clause_kind"] for c in body["result"]["clauses"]] == CLAUSE_KINDS
+    assert body["result"]["citations"][0]["article_ref"] == "المادة (2)"
+    assert "الطرف الأول (البائع)" in systems[0]
 
 
 def test_a_repeated_job_id_is_accepted_but_runs_once():

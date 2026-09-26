@@ -113,16 +113,27 @@ components:
       properties:
         contract_type:
           type: string
-          enum: [rent]
+          enum: [rent, sale]
           description: >-
-            Only rent can be drafted today. Any other value is accepted on
-            the wire and fails with error_code unsupported_contract_type.
+            rent drafts a lease (عقد إيجار); sale drafts a sale agreement
+            (اتفاقية بيع) binding the parties to complete the transfer at
+            the Land Registry, where ownership passes (it does not pass on
+            signing). Any other value is accepted on the wire and fails with
+            error_code unsupported_contract_type.
         parties:
           type: array
+          description: >-
+            For a sale, each party's `role` is seller or buyer (drafted as
+            الطرف الأول (البائع) and الطرف الثاني (المشتري)).
           items:
             type: object
         property:
           type: object
+          description: >-
+            Free-form; passed to the model as given. For a sale, include the
+            Land Registry identifiers if known (e.g. basin_name,
+            basin_number, parcel_number, apartment_number) — each one left
+            out becomes a [bracketed blank].
         terms:
           type: object
           description: >-
@@ -139,12 +150,15 @@ components:
             price_unit:
               type: string
               example: per_month
+              description: Rent only. Omit for a sale — price is the total.
             starts_on:
               type: string
               format: date
+              description: Rent only.
             ends_on:
               type: string
               format: date
+              description: Rent only.
         language:
           type: string
           enum: [ar, en]
@@ -164,8 +178,10 @@ components:
           type: string
           description: >-
             Optional. Scopes law retrieval to this contract's own law plus
-            the general layer (e.g. "rent" -> rent+general). Omitted or
-            unrecognized falls back to the general layer only.
+            the general layer ("rent" -> rent+general, "sale" ->
+            sale+ownership+tax+general) and judges it as that type (a sale
+            on its price and registry transfer). Unrecognized falls back to
+            the general layer only; omitted searches every law type.
         samples:
           type: integer
           minimum: 1

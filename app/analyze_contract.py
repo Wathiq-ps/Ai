@@ -23,10 +23,10 @@ from dataclasses import dataclass
 from app.errors import JobFailed
 from app.generate_contract import (
     CLAUSE_KINDS,
-    CLAUSE_TOPICS,
     CONTRACT_LAW_TYPES,
     MAX_ATTEMPTS,
     Citation,
+    clause_topics,
 )
 from app.knowledge import SearchResult, search_many
 from app.providers.base import EmbeddingProvider, LLMProvider
@@ -310,7 +310,7 @@ async def _retrieve_context(
     seed = content[:2000]
     prefix = f"{contract_type} contract" if contract_type else "contract"
     law_types = CONTRACT_LAW_TYPES.get(contract_type, ["general"]) if contract_type else None
-    queries = [f"{prefix}: {topic}. {seed}" for topic in CLAUSE_TOPICS.values()]
+    queries = [f"{prefix}: {topic}. {seed}" for topic in clause_topics(contract_type).values()]
     context: dict[str, SearchResult] = {}
     for results in await search_many(
         pool, embedder, jurisdiction_id=jurisdiction_id, queries=queries,
@@ -322,8 +322,24 @@ async def _retrieve_context(
     return {f"C{i + 1}": result for i, result in enumerate(context.values())}
 
 
+# The only prompt wording that differs by contract type: what a contract
+# cannot be enforced without, and the example blank. A sale is judged on its
+# price and on binding the parties to the registry transfer — a West Bank sale
+# of land happens only at دائرة تسجيل الأراضي (Law 49/1953 art. 2). Rent's is
+# the wording analyze shipped with, and stays the fallback for an omitted or
+# unknown type.
+REVIEW_BY_TYPE = {
+    "rent": {"essentials": "parties, property, rent", "blank": "[تاريخ بدء الإجارة]"},
+    "sale": {
+        "essentials": "parties, property, price, a commitment to complete the transfer at دائرة تسجيل الأراضي",
+        "blank": "[رقم القطعة]",
+    },
+}
+
+
 def _build_prompt(content: str, contract_type: str | None, context: dict[str, SearchResult]) -> tuple[str, str]:
     excerpts = "\n".join(f"[{label}] {r.content}" for label, r in context.items())
+    review = REVIEW_BY_TYPE.get(contract_type, REVIEW_BY_TYPE["rent"])
     system = (
         "You are a Palestinian-law contract reviewer. Judge the contract only against the law "
         "excerpts provided; do not invent legal rules. Reply with JSON only, no prose, no markdown "
@@ -349,7 +365,7 @@ def _build_prompt(content: str, contract_type: str | None, context: dict[str, Se
         "  critical — the contract or the term is void or unenforceable, or it strips a party of a "
         "protection the statute makes mandatory.\n"
         "  high — the term conflicts with the law and a court would likely strike or reverse it, or "
-        "something required to enforce the contract at all is absent (parties, property, rent).\n"
+        f"something required to enforce the contract at all is absent ({review['essentials']}).\n"
         "  medium — a gap or ambiguity that will cause a dispute but is curable by filling it in "
         "(an unfilled date, a missing inventory, an unnamed court).\n"
         "  low — a customary protective term that is advisable but not legally required.\n"
@@ -359,7 +375,7 @@ def _build_prompt(content: str, contract_type: str | None, context: dict[str, Se
         "title, description or suggested_text. A lawyer reading the report has never seen them. "
         "Refer to law the way the excerpt itself does — by its article number, e.g. المادة (4). "
         "suggested_text is contract Arabic ready to paste into the contract, using bracketed blanks "
-        "such as [تاريخ بدء الإجارة] for anything the parties must still supply — never dotted lines. "
+        f"such as {review['blank']} for anything the parties must still supply — never dotted lines. "
         "Report contradictions with the excerpts (legal_conflict), vague or unenforceable "
         "wording (ambiguity), improvements (suggestion), and commercial/legal exposure (risk). "
         "summary_ar is Arabic, summary_en is English; both summarise the contract's state in a "

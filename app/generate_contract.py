@@ -48,6 +48,18 @@ CLAUSE_TOPICS = {
     "other": "signatures and any other required formalities",
 }
 
+# "contract duration" is a lease's question. A sale has no term; its timeline
+# is handover and the registry transfer, and a duration query invites the
+# Mejelle's lease-term articles into a sale's context.
+CLAUSE_TOPIC_OVERRIDES = {
+    "sale": {"duration": "delivery of the property and completing the sale at the Land Registry"},
+}
+
+
+def clause_topics(contract_type: str | None) -> dict[str, str]:
+    return CLAUSE_TOPICS | CLAUSE_TOPIC_OVERRIDES.get(contract_type, {})
+
+
 MAX_ATTEMPTS = 3
 
 # A contract is governed by its own subject-matter law plus the `general`
@@ -55,7 +67,11 @@ MAX_ATTEMPTS = 3
 # foreigners-ownership law at whatever the embedder ranks highest.
 CONTRACT_LAW_TYPES = {
     "rent": ["rent", "general"],
-    "sale": ["sale", "ownership", "general"],
+    # `tax` belongs to a sale, not a lease: Law 11/1954 art. 14(5) bars the
+    # registry from recording the sale until the property's tax is paid, and
+    # art. 17 makes the buyer liable only from the year after — which is what
+    # the sale's obligations clause allocates. A lease moves neither.
+    "sale": ["sale", "ownership", "tax", "general"],
 }
 
 # What each clause has to *do*, in the register Palestinian/Jordanian leases
@@ -76,11 +92,45 @@ DRAFTING_NOTES = {
     "other": "Execution formalities only: number of copies, that the preamble forms part of the contract, that the contract is an executory instrument (سند تنفيذي), and signature by both parties and witnesses. No legal doctrine.",
 }
 
-# DRAFTING_NOTES and the system prompt are written for a lease, so a sale
-# drafted through them comes out in lease wording. The job endpoint refuses
-# anything not listed here; adding sale means its own notes (and, ideally, its
-# registration law in the KB), then adding it to this set.
-DRAFTABLE_CONTRACT_TYPES = {"rent"}
+# A West Bank sale of land is transacted only at دائرة تسجيل الأراضي (Law
+# 49/1953 art. 2, Regulation 1/1953 art. 3), so the parties' own contract
+# cannot pass ownership. It is drafted as a sale agreement binding them to
+# sell, buy, pay, and complete the transfer at the registry by a deadline.
+SALE_DRAFTING_NOTES = {
+    "parties": "Name the party whose role is seller as الطرف الأول (البائع) and the buyer as الطرف الثاني (المشتري) with their id numbers, and record that they contract in full legal capacity.",
+    "subject": "Describe the property sold as the Land Registry records it — the town, اسم الحوض ورقمه, رقم القطعة, رقم الشقة where it is an apartment, and the area — with a bracketed blank for each identifier not supplied, and record that the seller is its registered owner.",
+    "price": "State the total sale price. Nothing else belongs in this clause.",
+    "payment_terms": "State how the price is paid — in full on signing, a deposit (عربون) now and the balance at the registry transfer, or instalments with their amounts and due dates — and what counts as valid discharge. Use bracketed blanks for any amount or date not supplied.",
+    "duration": "State the date the property is handed over and the deadline by which both parties complete the transfer at دائرة تسجيل الأراضي. Use bracketed blanks for any date not supplied.",
+    "obligations": "A numbered list: the seller hands the property over free of occupants, bears its taxes and charges and clears any encumbrance up to the transfer, and attends the registry to transfer it; the buyer pays the price as agreed and attends the registry to take the transfer. Who bears the registry transfer fees is a bracketed blank.",
+    "warranties": "The seller's warranty that he owns the property and may sell it, that it is free of any رهن or حجز, against hidden defects (خيار العيب), and against the buyer's eviction by a third party's claim (ضمان الاستحقاق).",
+    "termination": "State plainly when this agreement may be rescinded: the buyer's failure to pay the price as agreed, or either party's failure to complete the transfer at the registry by the deadline, after notice. Two or three sentences, not a list.",
+    "dispute_resolution": DRAFTING_NOTES["dispute_resolution"],
+    "governing_law": DRAFTING_NOTES["governing_law"],
+    "other": "Execution formalities only: number of copies, that the preamble forms part of the agreement, and signature by both parties and witnesses — and state that ownership passes to the buyer only when the sale is registered at دائرة تسجيل الأراضي. No legal doctrine.",
+}
+
+# The only lines of the system prompt that differ by contract type: the
+# instrument being drafted, which excerpts have no place in it, the example
+# blank, and the clause notes. Rent's values are the lease prompt verbatim.
+DRAFTING_BY_TYPE = {
+    "rent": {
+        "instrument": "a عقد إيجار executed before الكاتب العدل",
+        "off_topic": "an excerpt about foreigners, sales or taxes has no place in a lease between two Palestinians",
+        "blank": "[تاريخ بدء الإجارة]",
+        "notes": DRAFTING_NOTES,
+    },
+    "sale": {
+        "instrument": "an اتفاقية بيع that binds the parties to complete the sale at دائرة تسجيل الأراضي",
+        "off_topic": "an excerpt about foreigners or leases has no place in a sale between two Palestinians",
+        "blank": "[رقم القطعة]",
+        "notes": SALE_DRAFTING_NOTES,
+    },
+}
+
+# The job endpoint refuses any other type rather than draft it in another
+# type's wording.
+DRAFTABLE_CONTRACT_TYPES = set(DRAFTING_BY_TYPE)
 
 # A statute is pinned by its number/year pair — "رقم (62) لسنة 1953", "رقم 62
 # لعام ١٩٥٣", "رقم 62/1953". `\d` matches Arabic-Indic digits and int()
@@ -207,7 +257,7 @@ async def _retrieve_context(
     """One retrieval per clause topic, deduplicated by chunk_id, labeled `C1..Cn`."""
     property_desc = " ".join(str(v) for v in property.values())
     law_types = CONTRACT_LAW_TYPES.get(contract_type, ["general"])
-    queries = [f"{contract_type} contract: {topic}. {property_desc}" for topic in CLAUSE_TOPICS.values()]
+    queries = [f"{contract_type} contract: {topic}. {property_desc}" for topic in clause_topics(contract_type).values()]
     context: dict[str, SearchResult] = {}
     for results in await search_many(
         pool, embedder, jurisdiction_id=jurisdiction_id, queries=queries,
@@ -224,22 +274,25 @@ def _build_prompt(
     context: dict[str, SearchResult],
 ) -> tuple[str, str]:
     excerpts = "\n".join(f"[{label}] ({r.source_title}) {r.content}" for label, r in context.items())
-    notes = "\n".join(f"- {kind}: {DRAFTING_NOTES[kind]}" for kind in CLAUSE_KINDS)
+    # ponytail: a type with no entry is drafted as a lease, as every type was
+    # before sale. Only reachable by calling generate_contract directly — the
+    # job endpoint refuses anything not in DRAFTABLE_CONTRACT_TYPES.
+    drafting = DRAFTING_BY_TYPE.get(contract_type, DRAFTING_BY_TYPE["rent"])
+    notes = "\n".join(f"- {kind}: {drafting['notes'][kind]}" for kind in CLAUSE_KINDS)
     system = (
         "You draft contracts the way a Palestinian lawyer drafts them: the plain, operative register "
-        "of a عقد إيجار executed before الكاتب العدل, not an academic restatement of the law.\n"
+        f"of {drafting['instrument']}, not an academic restatement of the law.\n"
         "\n"
         "The excerpts are legal AUTHORITY, not content to reproduce. Never quote, paraphrase or "
         "restate a rule from them. Write the binding term the rule requires or permits, in the voice "
         "of the contract, addressing the parties as الطرف الأول and الطرف الثاني — then cite the "
         "excerpt that authorises it. A clause that says what the law provides, instead of what these "
         "two parties owe each other, is wrong and will be rejected.\n"
-        "Never cite an excerpt that does not apply to these parties — an excerpt about foreigners, "
-        "sales or taxes has no place in a lease between two Palestinians.\n"
+        f"Never cite an excerpt that does not apply to these parties — {drafting['off_topic']}.\n"
         "Use the supplied Terms (price, currency, price_unit, starts_on, ends_on) exactly as given "
         "wherever a clause needs them.\n"
         "If a clause needs a detail that was not supplied (a date, a term length, a notice period, a "
-        "deposit), write the term with a bracketed blank such as [تاريخ بدء الإجارة] rather than "
+        f"deposit), write the term with a bracketed blank such as {drafting['blank']} rather than "
         "inventing a value or padding the clause with legal doctrine.\n"
         "Keep each clause to what it is for — one clause, one job:\n"
         f"{notes}\n"
