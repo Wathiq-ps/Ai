@@ -1,6 +1,8 @@
-"""Sprint 5: /v1/jobs -> generate_contract background task -> signed callback.
-Everything here is offline: httpx.AsyncClient is swapped for a capturing
-fake, and app.main.generate_contract/get_pool are monkeypatched per test."""
+"""Sprint 5: /v1/jobs -> the kind's runner (app/jobs.py) -> signed callback.
+
+Everything here is offline: httpx.AsyncClient is swapped for a capturing fake,
+and the job's resources (app.main.get_pool / get_llm_provider /
+get_embedding_provider) are monkeypatched per test."""
 
 import asyncio
 import json
@@ -8,7 +10,7 @@ import logging
 import uuid
 from datetime import date
 from types import SimpleNamespace
-from typing import ClassVar
+from typing import ClassVar, get_args
 
 import httpx
 import pytest
@@ -16,10 +18,12 @@ from fastapi.testclient import TestClient
 
 import app.analyze_contract as ac
 import app.generate_contract as gc
+import app.jobs as jobs
 from app import main
 from app.analyze_contract import AnalyzeContractResult, ClauseCoverage, Finding
 from app.config import settings
 from app.generate_contract import CLAUSE_KINDS, Citation, Clause, GenerateContractResult
+from app.jobs import JOBS, JobRequest
 from app.knowledge import SearchResult
 from app.providers.openai_compatible import OpenAICompatibleLLMProvider
 from app.security import sign_callback
@@ -57,11 +61,26 @@ def _capture_httpx(monkeypatch):
     yield
 
 
-def _post_job(job_id: str, payload: dict) -> object:
+def _post_job(job_id: str, payload: dict, kind: str = "generate_contract") -> object:
     return client.post(
         "/v1/jobs",
-        json={"job_id": job_id, "kind": "generate_contract", "jurisdiction_id": str(uuid.uuid4()), "payload": payload},
+        json={"job_id": job_id, "kind": kind, "jurisdiction_id": str(uuid.uuid4()), "payload": payload},
     )
+
+
+def _no_resources(monkeypatch) -> None:
+    """A payload that cannot be served must cost no connection and no provider
+    client — validation runs before anything is acquired (JobKind.validate)."""
+
+    def _boom_sync(*args, **kwargs):
+        raise AssertionError("an invalid payload must not acquire resources")
+
+    async def _boom_async(*args, **kwargs):
+        raise AssertionError("an invalid payload must not acquire resources")
+
+    monkeypatch.setattr(main, "get_pool", _boom_async)
+    monkeypatch.setattr(main, "get_llm_provider", _boom_sync)
+    monkeypatch.setattr(main, "get_embedding_provider", _boom_sync)
 
 
 def _verify_signature(call: dict) -> dict:
@@ -70,7 +89,9 @@ def _verify_signature(call: dict) -> dict:
     return json.loads(call["content"])
 
 
-def test_missing_payload_fields_sends_failed_callback_with_valid_signature():
+def test_missing_payload_fields_sends_failed_callback_with_valid_signature(monkeypatch):
+    _no_resources(monkeypatch)
+
     job_id = str(uuid.uuid4())
     response = _post_job(job_id, {"contract_type": "sale"})  # missing parties/property
     assert response.status_code == 202
@@ -102,7 +123,7 @@ def test_success_path_sends_signed_callback_with_result(monkeypatch):
             kb_version_id=kb_version_id,
         )
 
-    monkeypatch.setattr(main, "generate_contract", _fake_generate_contract)
+    monkeypatch.setattr(jobs, "generate_contract", _fake_generate_contract)
     monkeypatch.setattr(main, "get_pool", lambda: _async_none())
 
     job_id = str(uuid.uuid4())
@@ -120,7 +141,7 @@ def test_success_path_sends_signed_callback_with_result(monkeypatch):
     assert body["result"]["citations"][0]["source_id"] == str(source_id)
     assert body["error_code"] is None
     assert body["provenance"]["kb_version_id"] == str(kb_version_id)
-    assert body["provenance"]["prompt_version"] == main.GENERATE_CONTRACT_PROMPT_VERSION
+    assert body["provenance"]["prompt_version"] == JOBS["generate_contract"].prompt_version
     # ai_jobs_success_has_provenance refuses a succeeded row without it.
     assert body["provenance"]["model_version"]
 
@@ -158,7 +179,7 @@ def test_analyze_contract_sends_signed_callback_with_findings_and_score(monkeypa
             kb_version_id=kb_version_id,
         )
 
-    monkeypatch.setattr(main, "analyze_contract", _fake_analyze_contract)
+    monkeypatch.setattr(jobs, "analyze_contract", _fake_analyze_contract)
     monkeypatch.setattr(main, "get_pool", lambda: _async_none())
 
     job_id = str(uuid.uuid4())
@@ -180,10 +201,12 @@ def test_analyze_contract_sends_signed_callback_with_findings_and_score(monkeypa
     assert body["status"] == "succeeded"
     assert body["result"]["risk_score"] == 18
     assert body["result"]["findings"][0]["citations"][0]["chunk_id"] == str(chunk_id)
-    assert body["provenance"]["prompt_version"] == main.ANALYZE_CONTRACT_PROMPT_VERSION
+    assert body["provenance"]["prompt_version"] == JOBS["analyze_contract"].prompt_version
 
 
-def test_analyze_contract_without_content_fails_closed():
+def test_analyze_contract_without_content_fails_closed(monkeypatch):
+    _no_resources(monkeypatch)
+
     response = client.post(
         "/v1/jobs",
         json={"job_id": str(uuid.uuid4()), "kind": "analyze_contract", "jurisdiction_id": str(uuid.uuid4()), "payload": {}},
@@ -207,7 +230,9 @@ def test_job_kind_without_a_worker_is_rejected_up_front():
     assert _CapturingClient.instances == []
 
 
-def test_contract_type_that_cannot_be_drafted_fails_with_its_own_code():
+def test_contract_type_that_cannot_be_drafted_fails_with_its_own_code(monkeypatch):
+    _no_resources(monkeypatch)
+
     response = _post_job(
         str(uuid.uuid4()), {"contract_type": "sale", "parties": [{"name": "A"}], "property": {"address": "Gaza"}}
     )
@@ -275,7 +300,7 @@ def test_job_over_the_time_budget_reports_timed_out(monkeypatch):
     async def _never_finishes(*args, **kwargs):
         await asyncio.sleep(10)
 
-    monkeypatch.setattr(main, "generate_contract", _never_finishes)
+    monkeypatch.setattr(jobs, "generate_contract", _never_finishes)
     monkeypatch.setattr(main, "get_pool", lambda: _async_none())
     monkeypatch.setattr(settings, "job_timeout_seconds", 0.01)
 
@@ -315,7 +340,7 @@ def test_analyze_callback_carries_the_full_clause_checklist(monkeypatch):
             kb_version_id=uuid.uuid4(),
         )
 
-    monkeypatch.setattr(main, "analyze_contract", _fake_analyze_contract)
+    monkeypatch.setattr(jobs, "analyze_contract", _fake_analyze_contract)
     monkeypatch.setattr(main, "get_pool", lambda: _async_none())
     _CapturingClient.instances.clear()
     response = client.post(
@@ -419,3 +444,34 @@ def test_failed_generate_callback_still_reports_the_tokens_it_spent(monkeypatch)
     assert body["status"] == "failed"
     assert body["error_code"] == "llm_invalid_output"
     assert (body["usage"]["prompt_tokens"], body["usage"]["completion_tokens"]) == (6300, 600)
+
+
+# --- the kind table is the only declaration of a kind -----------------------
+
+
+def test_every_job_kind_declares_a_runner_and_a_prompt_version():
+    """The wire Literal is read off JOBS, so a kind cannot be accepted without a
+    runner to serve it — which is what a hand-kept Literal beside a hand-kept
+    _RUNNERS dict could not promise."""
+    assert get_args(JobRequest.model_fields["kind"].annotation) == tuple(JOBS)
+    for name, kind in JOBS.items():
+        assert kind.name == name
+        assert kind.prompt_version
+        assert callable(kind.run)
+        assert callable(kind.provenance)
+        assert callable(kind.timeout)
+
+
+def test_reindex_payload_needs_no_validation():
+    """UC-080's payload carries an optional tag and notes, nothing required."""
+    assert JOBS["reindex"].validate is None
+
+
+def test_only_the_60s_budget_kinds_are_bounded(monkeypatch):
+    """NFR-1.1 bounds generate/analyze; UC-080's rebuild takes minutes and has
+    no budget at all."""
+    monkeypatch.setattr(settings, "job_timeout_seconds", 42.0)
+
+    assert JOBS["generate_contract"].timeout() == 42.0
+    assert JOBS["analyze_contract"].timeout() == 42.0
+    assert JOBS["reindex"].timeout() is None
