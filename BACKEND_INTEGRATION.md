@@ -1,6 +1,7 @@
 # Consuming the AI service from Laravel
 
-For whoever builds Sprint 7 (outbox relay, webhook controller, review UI).
+For whoever builds or maintains the Laravel side (dispatch job, webhook
+controller, review UI).
 `openapi.yaml` is the authoritative schema; this is the part a schema cannot
 tell you — what the fields *mean*, and what will bite you.
 
@@ -9,9 +10,13 @@ tell you — what the fields *mean*, and what will bite you.
 You `POST /v1/jobs` (no auth header — call it over Railway's private
 network, `http://ai.railway.internal:8001`). You get **202 immediately** — that
 response carries no result, only `{job_id, status: "running"}`. The answer
-arrives later as a signed `POST` to `LARAVEL_CALLBACK_URL`. There is no
-polling endpoint. If you never get a callback, the job is lost (see
-*Failure modes*).
+arrives later as a signed `POST` to `LARAVEL_CALLBACK_URL`
+(`https://<back-end>/api/v1/ai/callback`). There is no polling endpoint. If
+you never get a callback, the job is lost (see *Failure modes*).
+
+Only `generate_contract`, `analyze_contract` and `reindex` are accepted; any
+other `kind` is a `422`. Sending the same `job_id` twice (your retry after a
+slow 202) gets a 202 both times and runs the job once.
 
 ```
 Laravel ──POST /v1/jobs────────────▶ AI          202 {job_id, status:running}
@@ -26,12 +31,14 @@ Callback body, every kind, every outcome:
   "kind": "generate_contract | analyze_contract | reindex",
   "status": "succeeded | failed | timed_out",
   "result": { ... } ,          // null unless succeeded
-  "error": "...",              // null unless failed/timed_out
+  "error": "...",              // null unless failed/timed_out; for logs
+  "error_code": "...",         // null unless failed/timed_out; see Failure modes
   "provenance": {
     "provider": "deepseek",
-    "model_id": "deepseek-v4-flash",
-    "prompt_version": "analyze-contract-v1",
-    "kb_version_id": "..."
+    "model_id": "deepseek-chat",
+    "model_version": "deepseek-chat",
+    "prompt_version": "analyze_contract-v1",
+    "kb_version_id": "..."     // null unless succeeded
   }
 }
 ```
@@ -163,6 +170,16 @@ latency matters more than agreement (see NFR-1.1 in *Failure modes*).
 
 ## `generate_contract`
 
+Only `contract_type: "rent"` can be drafted today — the drafting notes are
+written for a lease. Anything else fails with `unsupported_contract_type`
+rather than coming back in lease wording. Adding sale is new drafting notes
+(and ideally its registration law in the KB) on this side, not a wire change.
+
+Send `terms` (`price` as a major-unit string, `currency`, `price_unit`,
+`starts_on`, `ends_on`) with whatever you know. Anything left out becomes a
+`[bracketed blank]` in the draft, which the analysis then reports as
+`incomplete`.
+
 `body` is `clauses[]` joined by blank lines, in a fixed order — it is derived,
 not independently generated, so the two can never disagree. Render whichever
 suits you, but do not expect `body` to contain anything `clauses[]` does not.
@@ -181,9 +198,9 @@ execution line and signature block are not part of `body`.
 
 | `status` | Meaning | What to do |
 |---|---|---|
-| `failed` | Fail-closed. No verified sources, KB unreachable, or the model never returned valid output after 3 attempts | Return the contract to `draft`, notify. `error` is safe to log, not to show a user |
-| `timed_out` | Exceeded the 60s budget (NFR-1.1) | Same as failed. Retrying may succeed — it is a latency limit, not a verdict |
-| *no callback* | The AI service died, or callback delivery failed | **We do not retry callback delivery.** Your relay needs its own timeout to move a stuck job out of `dispatched` |
+| `failed` | Fail-closed. `error_code` says why: `invalid_payload`, `unsupported_contract_type`, `no_verified_sources`, `llm_invalid_output`, `internal` (`no_documents` for reindex) | Return the contract to `draft`. `error` is safe to log, not to show a user |
+| `timed_out` | Exceeded the 60s budget (NFR-1.1); `error_code` is `timeout` | Same as failed. Retrying may succeed — it is a latency limit, not a verdict |
+| *no callback* | The AI service died mid-job, or delivery failed 3 times | We retry delivery up to 3 times (network error or 5xx), re-signed each time; a 4xx from you is final. You still need your own timeout to move a stuck job out of `running` |
 
 A `timed_out` is not always the model's fault: the embedding provider is on a
 free tier that answers 429 past 20 requests/minute, and our client waits it
@@ -201,13 +218,15 @@ before suspecting the model.
 
 ## Not built yet
 
-- `answer_query` / `summarize` — Phase 3. Sending them today returns 202 and
-  then **nothing**, forever. Do not enqueue them.
+- `answer_query` / `summarize` — Phase 3. Sending them is a `422`.
 - `usage` (token counts, latency) — declared in `openapi.yaml`, never sent.
-- Callback retry/redelivery on our side.
+- Drafting anything but rent (see `generate_contract`).
 
 ## Local
 
 Leave `DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY` unset and the service runs on
-deterministic fakes — no network, no spend. Useful for exercising your relay
-and webhook controller against real HTTP without real drafts.
+deterministic fakes — no network, no spend. The fake LLM does not return
+JSON, so every `generate_contract`/`analyze_contract` ends in a signed
+`failed` callback (`llm_invalid_output`): good for exercising your failure
+path and signature check, not the happy path. For real drafts, point at the
+deployed service.

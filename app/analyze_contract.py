@@ -20,6 +20,7 @@ import uuid
 from collections import Counter
 from dataclasses import dataclass
 
+from app.errors import JobFailed
 from app.generate_contract import (
     CLAUSE_KINDS,
     CLAUSE_TOPICS,
@@ -66,7 +67,7 @@ COMPLETENESS_CAP = 55
 JUDGEMENT_CAP = 45
 
 
-class AnalysisFailed(Exception):
+class AnalysisFailed(JobFailed):
     """No verified law found, or the LLM never produced valid structured
     output after MAX_ATTEMPTS — fail closed (BR-28), no partial analysis."""
 
@@ -163,7 +164,7 @@ async def analyze_contract(
         content=content, k_per_topic=k_per_topic,
     )
     if not context:
-        raise AnalysisFailed("no verified law found for this jurisdiction")
+        raise AnalysisFailed("no verified law found for this jurisdiction", "no_verified_sources")
 
     # search() only serves the one `active` kb_version per jurisdiction.
     kb_version_id = next(iter(context.values())).kb_version_id
@@ -179,7 +180,7 @@ async def analyze_contract(
     )
     usable = [r for r in results if not isinstance(r, BaseException)]
     if not usable:
-        raise AnalysisFailed(f"no sample produced valid structured output: {results[0]}")
+        raise AnalysisFailed(f"no sample produced valid structured output: {results[0]}", "llm_invalid_output")
 
     coverage, judgements, summary_ar, summary_en = _vote(usable)
     findings = [_coverage_finding(c) for c in coverage if c.status != "present"] + judgements
@@ -208,7 +209,7 @@ async def _one_analysis(llm, system: str, user: str, context: dict[str, SearchRe
             return _parse_and_ground(raw, context)
         except _InvalidAnalysis as exc:
             last_error = str(exc)
-    raise AnalysisFailed(f"LLM never produced valid structured output: {last_error}")
+    raise AnalysisFailed(f"LLM never produced valid structured output: {last_error}", "llm_invalid_output")
 
 
 # Worst-first, so a tied vote on a clause fails safe rather than silently
@@ -463,6 +464,23 @@ def _citation(result: SearchResult) -> Citation:
     )
 
 
+# User-facing names for the clause kinds, so a checklist finding's Arabic title
+# doesn't carry the English enum value ("بند غائب: duration").
+CLAUSE_LABELS_AR = {
+    "parties": "أطراف العقد",
+    "subject": "محل العقد",
+    "price": "البدل",
+    "payment_terms": "طريقة الدفع",
+    "duration": "مدة العقد",
+    "obligations": "التزامات الطرفين",
+    "warranties": "الضمانات",
+    "termination": "إنهاء العقد",
+    "dispute_resolution": "تسوية النزاعات",
+    "governing_law": "القانون الواجب التطبيق",
+    "other": "أحكام ختامية",
+}
+
+
 def _coverage_finding(entry: ClauseCoverage) -> Finding:
     """A checklist verdict rendered as a finding. Severity comes from the
     status table, not from the model, so the same verdict always scores the
@@ -471,8 +489,8 @@ def _coverage_finding(entry: ClauseCoverage) -> Finding:
         kind="missing_clause",
         clause_kind=entry.clause_kind,
         severity=COVERAGE_SEVERITY[entry.status],
-        title_ar=f"{'بند غائب' if entry.status == 'absent' else 'بند غير مكتمل'}: {entry.clause_kind}",
-        title_en=f"{'Absent' if entry.status == 'absent' else 'Incomplete'} clause: {entry.clause_kind}",
+        title_ar=f"{'بند غائب' if entry.status == 'absent' else 'بند غير مكتمل'}: {CLAUSE_LABELS_AR[entry.clause_kind]}",
+        title_en=f"{'Absent' if entry.status == 'absent' else 'Incomplete'} clause: {entry.clause_kind.replace('_', ' ')}",
         description=entry.note,
         suggested_text=None,
         citations=entry.citations,

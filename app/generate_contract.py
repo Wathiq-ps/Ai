@@ -21,6 +21,7 @@ import json
 import uuid
 from dataclasses import dataclass
 
+from app.errors import JobFailed
 from app.knowledge import SearchResult, search_many
 from app.providers.base import EmbeddingProvider, LLMProvider
 
@@ -74,8 +75,14 @@ DRAFTING_NOTES = {
     "other": "Execution formalities only: number of copies, that the preamble forms part of the contract, that the contract is an executory instrument (سند تنفيذي), and signature by both parties and witnesses. No legal doctrine.",
 }
 
+# DRAFTING_NOTES and the system prompt are written for a lease, so a sale
+# drafted through them comes out in lease wording. The job endpoint refuses
+# anything not listed here; adding sale means its own notes (and, ideally, its
+# registration law in the KB), then adding it to this set.
+DRAFTABLE_CONTRACT_TYPES = {"rent"}
 
-class GenerationFailed(Exception):
+
+class GenerationFailed(JobFailed):
     """No verified law found, or the LLM never produced valid structured
     output after MAX_ATTEMPTS — fail closed (BR-28), no partial draft."""
 
@@ -114,10 +121,10 @@ _draft_cache: dict[tuple, GenerateContractResult] = {}
 
 def _draft_cache_key(
     jurisdiction_id: uuid.UUID, contract_type: str, parties: list[dict],
-    property: dict, language: str, k_per_clause: int,
+    property: dict, terms: dict | None, language: str, k_per_clause: int,
 ) -> tuple:
     payload = json.dumps(
-        {"parties": parties, "property": property}, sort_keys=True, ensure_ascii=False
+        {"parties": parties, "property": property, "terms": terms}, sort_keys=True, ensure_ascii=False
     )
     digest = hashlib.sha256(payload.encode()).hexdigest()
     return (jurisdiction_id, contract_type, digest, language, k_per_clause)
@@ -132,11 +139,12 @@ async def generate_contract(
     contract_type: str,
     parties: list[dict],
     property: dict,
+    terms: dict | None = None,
     language: str = "ar",
     k_per_clause: int = 5,
 ) -> GenerateContractResult:
     cache_key = _draft_cache_key(
-        jurisdiction_id, contract_type, parties, property, language, k_per_clause
+        jurisdiction_id, contract_type, parties, property, terms, language, k_per_clause
     )
     if cache_key in _draft_cache:
         return _draft_cache[cache_key]
@@ -146,13 +154,13 @@ async def generate_contract(
         property=property, k_per_clause=k_per_clause,
     )
     if not context:
-        raise GenerationFailed("no verified law found for this jurisdiction/contract type")
+        raise GenerationFailed("no verified law found for this jurisdiction/contract type", "no_verified_sources")
 
     # search() only ever queries the one `active` kb_version per jurisdiction
     # (see app/knowledge.py), so every result here shares the same id.
     kb_version_id = next(iter(context.values())).kb_version_id
 
-    system, user = _build_prompt(contract_type, parties, property, language, context)
+    system, user = _build_prompt(contract_type, parties, property, terms, language, context)
 
     last_error = ""
     for _ in range(MAX_ATTEMPTS):
@@ -170,7 +178,7 @@ async def generate_contract(
         _draft_cache[cache_key] = result
         return result
 
-    raise GenerationFailed(f"LLM never produced valid structured output: {last_error}")
+    raise GenerationFailed(f"LLM never produced valid structured output: {last_error}", "llm_invalid_output")
 
 
 class _InvalidDraft(Exception):
@@ -197,7 +205,8 @@ async def _retrieve_context(
 
 
 def _build_prompt(
-    contract_type: str, parties: list[dict], property: dict, language: str, context: dict[str, SearchResult]
+    contract_type: str, parties: list[dict], property: dict, terms: dict | None, language: str,
+    context: dict[str, SearchResult],
 ) -> tuple[str, str]:
     excerpts = "\n".join(f"[{label}] {r.content}" for label, r in context.items())
     notes = "\n".join(f"- {kind}: {DRAFTING_NOTES[kind]}" for kind in CLAUSE_KINDS)
@@ -212,6 +221,8 @@ def _build_prompt(
         "two parties owe each other, is wrong and will be rejected.\n"
         "Never cite an excerpt that does not apply to these parties — an excerpt about foreigners, "
         "sales or taxes has no place in a lease between two Palestinians.\n"
+        "Use the supplied Terms (price, currency, price_unit, starts_on, ends_on) exactly as given "
+        "wherever a clause needs them.\n"
         "If a clause needs a detail that was not supplied (a date, a term length, a notice period, a "
         "deposit), write the term with a bracketed blank such as [تاريخ بدء الإجارة] rather than "
         "inventing a value or padding the clause with legal doctrine.\n"
@@ -228,7 +239,8 @@ def _build_prompt(
     user = (
         f"Contract type: {contract_type}\n"
         f"Parties: {json.dumps(parties, ensure_ascii=False)}\n"
-        f"Property: {json.dumps(property, ensure_ascii=False)}\n\n"
+        f"Property: {json.dumps(property, ensure_ascii=False)}\n"
+        f"Terms: {json.dumps(terms or {}, ensure_ascii=False)}\n\n"
         f"Law excerpts:\n{excerpts}"
     )
     return system, user
