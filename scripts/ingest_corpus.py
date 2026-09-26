@@ -38,6 +38,41 @@ CORPUS = [
          publisher="ديوان الجريدة الرسمية - فلسطين",
          citation="قانون رقم (40) لسنة 1953 وتعديلاته",
          url="https://mjr.ogb.gov.ps/MergedLegislations/ViewText/43", eff=date(1953, 1, 1)),
+    # Sale of immovable property (2026-09-26). Jordanian-era West Bank laws are
+    # not in MJR's consolidated set (PA-era only) nor dftp.gov.ps (its
+    # Jordanian/Egyptian era is Gaza's Egyptian administration); An-Najah's
+    # Maqam carries them, each tagged ساري النفاذ في الضفة الغربية. Text only,
+    # Maqam's editorial article headings and case links left out.
+    dict(file="immovable-property-disposal-49-1953.txt", law_type="sale",
+         title_ar="قانون التصرف في الأموال غير المنقولة رقم (49) لسنة 1953",
+         title_en="Disposal of Immovable Property Law No. 49 of 1953",
+         publisher="موسوعة مقام - كلية القانون، جامعة النجاح الوطنية",
+         citation="قانون رقم (49) لسنة 1953",
+         url="https://maqam.najah.edu/legislation/59/", eff=date(1953, 1, 1)),
+    dict(file="immovable-property-amendments-51-1958.txt", law_type="sale",
+         title_ar="قانون معدل للأحكام المتعلقة بالأموال غير المنقولة رقم (51) لسنة 1958",
+         title_en="Law Amending the Provisions on Immovable Property No. 51 of 1958",
+         publisher="موسوعة مقام - كلية القانون، جامعة النجاح الوطنية",
+         citation="قانون رقم (51) لسنة 1958",
+         url="https://maqam.najah.edu/legislation/159/", eff=date(1958, 1, 1)),
+    dict(file="immovable-property-debt-security-46-1953.txt", law_type="sale",
+         title_ar="قانون وضع الأموال غير المنقولة تأميناً للدين رقم (46) لسنة 1953",
+         title_en="Immovable Property as Security for Debt Law No. 46 of 1953",
+         publisher="موسوعة مقام - كلية القانون، جامعة النجاح الوطنية",
+         citation="قانون رقم (46) لسنة 1953",
+         url="https://maqam.najah.edu/legislation/44/", eff=date(1953, 1, 1)),
+    dict(file="unregistered-property-registration-6-1964.txt", law_type="ownership",
+         title_ar="قانون تسجيل الأموال غير المنقولة التي لم يسبق تسجيلها رقم (6) لسنة 1964",
+         title_en="Registration of Previously Unregistered Immovable Property Law No. 6 of 1964",
+         publisher="موسوعة مقام - كلية القانون، جامعة النجاح الوطنية",
+         citation="قانون رقم (6) لسنة 1964",
+         url="https://maqam.najah.edu/legislation/46/", eff=date(1964, 1, 1)),
+    dict(file="land-registration-regulation-1-1953.txt", law_type="ownership",
+         title_ar="نظام تسجيل الأراضي رقم (1) لسنة 1953",
+         title_en="Land Registration Regulation No. 1 of 1953",
+         publisher="موسوعة مقام - كلية القانون، جامعة النجاح الوطنية",
+         citation="نظام رقم (1) لسنة 1953",
+         url="https://maqam.najah.edu/legislation/1190/", eff=date(1953, 1, 1)),
 ]
 
 

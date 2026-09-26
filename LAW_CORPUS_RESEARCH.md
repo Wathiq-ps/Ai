@@ -6,6 +6,30 @@
 > confirmed by a Palestinian lawyer before it is used as the basis for
 > citations in generated contracts.
 
+## 2026-09-26 update: Law 49/1953 is real, and in force in the West Bank
+
+The 09-09 update below is **wrong**. It searched MJR's consolidated set and
+dftp.gov.ps, neither of which holds Jordanian-era West Bank law: MJR
+consolidates PA-era legislation only (~270 instruments), and dftp.gov.ps's
+`الإدارة المصرية والأردنية` era turns out to be Gaza's Egyptian administration
+(`قرار الحاكم العام ...`). An-Najah's **Maqam** (`maqam.najah.edu`) has the
+Jordanian corpus, each law tagged `ساري النفاذ في الضفة الغربية`:
+
+| Law | Maqam | Articles | Why sale needs it |
+|---|---|---|---|
+| قانون التصرف في الأموال غير المنقولة رقم (49) لسنة 1953 | `/legislation/59/` | 19 | Art. 2: every disposition of land is transacted only at the Land Registry. Art. 18 **repeals the Ottoman 1331 disposal law**. Cited by the Court of Cassation up to 2024 |
+| قانون معدل للأحكام المتعلقة بالأموال غير المنقولة رقم (51) لسنة 1958 | `/legislation/159/` | 16 | Pre-emption (الشفعة) lapses 6 months after registry sale; ordinary sales by deed outside settled areas; powers of attorney to sell expire after a year |
+| قانون وضع الأموال غير المنقولة تأميناً للدين رقم (46) لسنة 1953 | `/legislation/44/` | 17 | Securing an unpaid price or instalments on the property, at the registry |
+| قانون تسجيل الأموال غير المنقولة التي لم يسبق تسجيلها رقم (6) لسنة 1964 | `/legislation/46/` | 13 | First registration of land never registered |
+| نظام تسجيل الأراضي رقم (1) لسنة 1953 | `/legislation/1190/` | 12 | Art. 3: a sale is executed at the registry by a sale contract per buyer |
+
+So for the West Bank the Ottoman 1331 law (`corpus/immovable-property-disposal-1331h.pdf`)
+is **repealed** — it is not ingested, and it no longer needs OCR. The texts
+above are in `corpus/*.txt` and listed in `scripts/ingest_corpus.py`
+(law_type `sale` / `ownership`). Maqam's editorial article headings and
+case-law links were left out; the statutory text is kept verbatim. Still not
+legally reviewed — a lawyer should confirm the set before verification.
+
 ## 2026-09-09 update: "Law 49/1953" does not check out
 
 Live corpus-hunting session (hands-on search, not just web reading) against
