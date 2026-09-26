@@ -103,6 +103,28 @@ def test_llm_provider_raises_instead_of_returning_a_truncated_reply():
     assert asyncio.run(_llm(_chat_response("stop", None)).chat("s", "u")) == ""
 
 
+def test_deepseek_provider_names_flash_and_turns_thinking_off(monkeypatch):
+    """deepseek-flash thinks by default, and thinking is what blew NFR-1.1's
+    60s budget before (config.py). Every call must carry the switch."""
+    from app import providers
+
+    monkeypatch.setattr(providers.settings, "deepseek_api_key", "test-key")
+    sent = []
+
+    class _StubCompletions:
+        async def create(self, **kwargs):
+            sent.append(kwargs)
+            return _chat_response()
+
+    llm = providers.get_llm_provider()
+    llm._client = SimpleNamespace(chat=SimpleNamespace(completions=_StubCompletions()))
+    asyncio.run(llm.chat("s", "u", json_mode=True))
+
+    assert sent[0]["model"] == providers.settings.chat_model  # a local .env may override
+    assert type(providers.settings).model_fields["chat_model"].default == "deepseek-flash"
+    assert sent[0]["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
 def test_llm_provider_adds_every_calls_tokens_to_the_current_job():
     """This sum is the callback's `usage`. A truncated reply is billed like
     any other, so it counts even though chat() raises on it."""
