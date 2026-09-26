@@ -106,6 +106,7 @@ components:
           oneOf:
             - $ref: "#/components/schemas/GenerateContractPayload"
             - $ref: "#/components/schemas/AnalyzeContractPayload"
+            - $ref: "#/components/schemas/ReindexPayload"
 
     GenerateContractPayload:
       type: object
@@ -113,13 +114,14 @@ components:
       properties:
         contract_type:
           type: string
-          enum: [rent, sale]
           description: >-
-            rent drafts a lease (عقد إيجار); sale drafts a sale agreement
-            (اتفاقية بيع) binding the parties to complete the transfer at
-            the Land Registry, where ownership passes (it does not pass on
-            signing). Any other value is accepted on the wire and fails with
-            error_code unsupported_contract_type.
+            Which contract to draft. rent drafts a lease (عقد إيجار); sale
+            drafts a sale agreement (اتفاقية بيع) binding the parties to
+            complete the transfer at the Land Registry, where ownership
+            passes (it does not pass on signing). Any other value is
+            accepted on the wire and answered with error_code
+            unsupported_contract_type, not a 422 — see
+            BACKEND_INTEGRATION.md's Failure modes.
         parties:
           type: array
           description: >-
@@ -139,6 +141,7 @@ components:
           description: >-
             Optional. Values the draft must use instead of leaving a
             [bracketed blank]. Pass what you have; omit what you don't.
+            Passed to the drafting prompt as given, so extra keys are used.
           properties:
             price:
               type: string
@@ -166,14 +169,17 @@ components:
 
     AnalyzeContractPayload:
       type: object
-      required: [contract_version_id, content]
+      required: [content]
       properties:
-        contract_version_id:
-          type: string
-          format: uuid
         content:
           type: string
           description: Full contract text/body to analyze.
+        contract_version_id:
+          type: string
+          format: uuid
+          description: >-
+            Optional. For Laravel's own bookkeeping — this service never reads
+            it and correlates the callback by job_id, so it is not required.
         contract_type:
           type: string
           description: >-
@@ -194,9 +200,24 @@ components:
             faster, noisier report. See BACKEND_INTEGRATION.md's
             Reproducibility section.
 
+    ReindexPayload:
+      type: object
+      description: >-
+        UC-080. Rebuilds this jurisdiction's active kb_version from every
+        document already registered in knowledge.documents. The AI service
+        cannot create or verify sources, so there is nothing else to send.
+      properties:
+        tag:
+          type: string
+          nullable: true
+          description: Optional label for the new kb_version. Defaults to reindex-<UTC timestamp>.
+        notes:
+          type: string
+          nullable: true
+
     JobCallback:
       type: object
-      required: [job_id, kind, status, provenance]
+      required: [job_id, kind, status, provenance, usage]
       properties:
         job_id:
           type: string
@@ -211,6 +232,7 @@ components:
           oneOf:
             - $ref: "#/components/schemas/GenerateContractResult"
             - $ref: "#/components/schemas/AnalyzeContractResult"
+            - $ref: "#/components/schemas/ReindexResult"
         error:
           type: string
           nullable: true
@@ -223,6 +245,8 @@ components:
           description: Set when status != succeeded. Stable; store it in ai_jobs.error_code.
         provenance:
           $ref: "#/components/schemas/Provenance"
+        usage:
+          $ref: "#/components/schemas/Usage"
 
     GenerateContractResult:
       type: object
@@ -247,8 +271,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Citation"
-        usage:
-          $ref: "#/components/schemas/Usage"
 
     AnalyzeContractResult:
       type: object
@@ -307,8 +329,20 @@ components:
             checklist findings carry 1.0 by construction and are excluded, so
             this does not drift to 1.0 on contracts with many missing clauses.
             A contract with no judgement findings reports 1.0.
-        usage:
-          $ref: "#/components/schemas/Usage"
+
+    ReindexResult:
+      type: object
+      required: [kb_version_id, documents]
+      properties:
+        kb_version_id:
+          type: string
+          format: uuid
+          description: The new active version. The previous active one is superseded.
+        documents:
+          type: integer
+          description: >-
+            How many documents went into the build, not the chunk count. The
+            chunk count is verified internally before the version is activated.
 
     ClauseCoverage:
       type: object
@@ -421,14 +455,33 @@ components:
 
     Usage:
       type: object
+      required: [prompt_tokens, completion_tokens, latency_ms]
       description: >
-        NOT POPULATED YET -- the service does not currently capture per-call
-        token counts or latency. Treat as absent and do not build reporting on
-        it until this note is removed.
+        What the job cost. On every callback, failed and timed_out included --
+        a failed job still spent its tokens. Store in ai_jobs.tokens_input,
+        tokens_output and latency_ms.
       properties:
         prompt_tokens:
           type: integer
+          minimum: 0
+          description: >
+            Input tokens summed over every LLM chat call the job made: every
+            analyze_contract sample and JSON-repair retry, every
+            generate_contract attempt. Embedding calls are not counted, so a
+            reindex reports 0. Also 0 when no LLM call was made -- an invalid
+            payload, an identical re-run served from cache, or the fake
+            provider. On timed_out, a call cut off mid-flight never reports
+            its usage, so the figure is a lower bound.
         completion_tokens:
           type: integer
+          minimum: 0
+          description: >
+            Output tokens, summed the same way (reasoning tokens included
+            where the model emits them).
         latency_ms:
           type: integer
+          minimum: 0
+          description: >
+            Wall time of the job's work in this service, from when it started
+            running to the first callback attempt (delivery retries are not
+            included). Compare against the 60s budget (NFR-1.1).

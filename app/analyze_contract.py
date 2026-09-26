@@ -30,6 +30,8 @@ from app.generate_contract import (
 )
 from app.knowledge import SearchResult, search_many
 from app.providers.base import EmbeddingProvider, LLMProvider
+from app.usage import stage
+from app.wire import ErrorCode
 
 FINDING_KINDS = ["missing_clause", "legal_conflict", "ambiguity", "suggestion", "risk"]
 
@@ -159,12 +161,13 @@ async def analyze_contract(
     if cache_key in _analysis_cache:
         return _analysis_cache[cache_key]
 
-    context = await _retrieve_context(
-        pool, embedder, jurisdiction_id=jurisdiction_id, contract_type=contract_type,
-        content=content, k_per_topic=k_per_topic,
-    )
+    with stage("retrieval"):
+        context = await _retrieve_context(
+            pool, embedder, jurisdiction_id=jurisdiction_id, contract_type=contract_type,
+            content=content, k_per_topic=k_per_topic,
+        )
     if not context:
-        raise AnalysisFailed("no verified law found for this jurisdiction", "no_verified_sources")
+        raise AnalysisFailed("no verified law found for this jurisdiction", ErrorCode.NO_VERIFIED_SOURCES)
 
     # search() only serves the one `active` kb_version per jurisdiction.
     kb_version_id = next(iter(context.values())).kb_version_id
@@ -175,15 +178,16 @@ async def analyze_contract(
     # sample means what it means in every other — that is what makes the votes
     # below comparable.
     results = await asyncio.gather(
-        *(_one_analysis(llm, system, user, context) for _ in range(samples)),
+        *(_one_analysis(llm, system, user, context, sample=i + 1) for i in range(samples)),
         return_exceptions=True,
     )
     usable = [r for r in results if not isinstance(r, BaseException)]
     if not usable:
-        raise AnalysisFailed(f"no sample produced valid structured output: {results[0]}", "llm_invalid_output")
+        raise AnalysisFailed(f"no sample produced valid structured output: {results[0]}", ErrorCode.LLM_INVALID_OUTPUT)
 
-    coverage, judgements, summary_ar, summary_en = _vote(usable)
-    findings = [_coverage_finding(c) for c in coverage if c.status != "present"] + judgements
+    with stage("vote", samples=len(usable)):
+        coverage, judgements, summary_ar, summary_en = _vote(usable)
+        findings = [_coverage_finding(c) for c in coverage if c.status != "present"] + judgements
     result = AnalyzeContractResult(
         coverage=coverage,
         findings=findings,
@@ -199,17 +203,18 @@ async def analyze_contract(
     return result
 
 
-async def _one_analysis(llm, system: str, user: str, context: dict[str, SearchResult]):
+async def _one_analysis(llm, system: str, user: str, context: dict[str, SearchResult], *, sample: int = 1):
     """One sample, with its own bounded JSON-repair loop."""
     last_error = ""
-    for _ in range(MAX_ATTEMPTS):
+    for attempt in range(1, MAX_ATTEMPTS + 1):
         prompt = user if not last_error else f"{user}\n\nYour last reply was invalid: {last_error}. Reply with corrected JSON only."
-        raw = await llm.chat(system, prompt, json_mode=True, max_tokens=16384)
+        with stage("llm", sample=sample, attempt=attempt):
+            raw = await llm.chat(system, prompt, json_mode=True, max_tokens=16384)
         try:
             return _parse_and_ground(raw, context)
         except _InvalidAnalysis as exc:
             last_error = str(exc)
-    raise AnalysisFailed(f"LLM never produced valid structured output: {last_error}", "llm_invalid_output")
+    raise AnalysisFailed(f"LLM never produced valid structured output: {last_error}", ErrorCode.LLM_INVALID_OUTPUT)
 
 
 # Worst-first, so a tied vote on a clause fails safe rather than silently

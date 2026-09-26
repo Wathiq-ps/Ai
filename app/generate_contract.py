@@ -22,9 +22,12 @@ import re
 import uuid
 from dataclasses import dataclass
 
+from app.arabic_money import PERIODS, amount_ar
 from app.errors import JobFailed
 from app.knowledge import SearchResult, search_many
 from app.providers.base import EmbeddingProvider, LLMProvider
+from app.usage import stage
+from app.wire import ErrorCode
 
 CLAUSE_KINDS = [
     "parties", "subject", "price", "payment_terms", "duration", "obligations",
@@ -81,7 +84,7 @@ CONTRACT_LAW_TYPES = {
 DRAFTING_NOTES = {
     "parties": "Name both parties as الطرف الأول (المؤجر) and الطرف الثاني (المستأجر) with their id numbers, and record that they contract in full legal capacity.",
     "subject": "Describe the let property and the use it is let for, and record that the tenant received it in the condition described.",
-    "price": "State the rent figure and the period it covers. Nothing else belongs in this clause.",
+    "price": "State the rent as digits (words) currency period: Terms' price_ar copied character for character, then price_unit_ar — never a bare decimal or a currency code. If Terms carry no price, a bracketed blank. Nothing else belongs in this clause.",
     "payment_terms": "State when and how rent falls due, what counts as valid discharge, and what happens on late payment.",
     "duration": "State the start date, the end date, and what happens at expiry (renewal or vacancy). Use bracketed blanks for any date not supplied.",
     "obligations": "A numbered list of what each party must and must not do — upkeep, subletting, lawful use, returning the property as received.",
@@ -99,7 +102,7 @@ DRAFTING_NOTES = {
 SALE_DRAFTING_NOTES = {
     "parties": "Name the party whose role is seller as الطرف الأول (البائع) and the buyer as الطرف الثاني (المشتري) with their id numbers, and record that they contract in full legal capacity.",
     "subject": "Describe the property sold as the Land Registry records it — the town, اسم الحوض ورقمه, رقم القطعة, رقم الشقة where it is an apartment, and the area — with a bracketed blank for each identifier not supplied, and record that the seller is its registered owner.",
-    "price": "State the total sale price. Nothing else belongs in this clause.",
+    "price": "State the total sale price as digits (words) currency: Terms' price_ar copied character for character — never a bare decimal or a currency code. If Terms carry no price, a bracketed blank. Nothing else belongs in this clause.",
     "payment_terms": "State how the price is paid — in full on signing, a deposit (عربون) now and the balance at the registry transfer, or instalments with their amounts and due dates — and what counts as valid discharge. Use bracketed blanks for any amount or date not supplied.",
     "duration": "State the date the property is handed over and the deadline by which both parties complete the transfer at دائرة تسجيل الأراضي. Use bracketed blanks for any date not supplied.",
     "obligations": "A numbered list: the seller hands the property over free of occupants, bears its taxes and charges and clears any encumbrance up to the transfer, and attends the registry to transfer it; the buyer pays the price as agreed and attends the registry to take the transfer. Who bears the registry transfer fees is a bracketed blank.",
@@ -111,18 +114,21 @@ SALE_DRAFTING_NOTES = {
 }
 
 # The only lines of the system prompt that differ by contract type: the
-# instrument being drafted, which excerpts have no place in it, the example
-# blank, and the clause notes. Rent's values are the lease prompt verbatim.
+# instrument being drafted, which excerpts have no place in it, what the Terms
+# hold, the example blank, and the clause notes. Rent's values are the lease
+# prompt verbatim.
 DRAFTING_BY_TYPE = {
     "rent": {
         "instrument": "a عقد إيجار executed before الكاتب العدل",
         "off_topic": "an excerpt about foreigners, sales or taxes has no place in a lease between two Palestinians",
+        "terms": "the rent, its period, starts_on, ends_on",
         "blank": "[تاريخ بدء الإجارة]",
         "notes": DRAFTING_NOTES,
     },
     "sale": {
         "instrument": "an اتفاقية بيع that binds the parties to complete the sale at دائرة تسجيل الأراضي",
         "off_topic": "an excerpt about foreigners or leases has no place in a sale between two Palestinians",
+        "terms": "the price, starts_on, ends_on",
         "blank": "[رقم القطعة]",
         "notes": SALE_DRAFTING_NOTES,
     },
@@ -214,12 +220,13 @@ async def generate_contract(
     if cache_key in _draft_cache:
         return _draft_cache[cache_key]
 
-    context = await _retrieve_context(
-        pool, embedder, jurisdiction_id=jurisdiction_id, contract_type=contract_type,
-        property=property, k_per_clause=k_per_clause,
-    )
+    with stage("retrieval"):
+        context = await _retrieve_context(
+            pool, embedder, jurisdiction_id=jurisdiction_id, contract_type=contract_type,
+            property=property, k_per_clause=k_per_clause,
+        )
     if not context:
-        raise GenerationFailed("no verified law found for this jurisdiction/contract type", "no_verified_sources")
+        raise GenerationFailed("no verified law found for this jurisdiction/contract type", ErrorCode.NO_VERIFIED_SOURCES)
 
     # search() only ever queries the one `active` kb_version per jurisdiction
     # (see app/knowledge.py), so every result here shares the same id.
@@ -228,9 +235,10 @@ async def generate_contract(
     system, user = _build_prompt(contract_type, parties, property, terms, language, context)
 
     last_error = ""
-    for _ in range(MAX_ATTEMPTS):
+    for attempt in range(1, MAX_ATTEMPTS + 1):
         prompt = user if not last_error else f"{user}\n\nYour last reply was invalid: {last_error}. Reply with corrected JSON only."
-        raw = await llm.chat(system, prompt, json_mode=True, max_tokens=16384)
+        with stage("llm", attempt=attempt):
+            raw = await llm.chat(system, prompt, json_mode=True, max_tokens=16384)
         try:
             clauses, citations = _parse_and_ground(raw, context)
         except _InvalidDraft as exc:
@@ -243,7 +251,7 @@ async def generate_contract(
         _draft_cache[cache_key] = result
         return result
 
-    raise GenerationFailed(f"LLM never produced valid structured output: {last_error}", "llm_invalid_output")
+    raise GenerationFailed(f"LLM never produced valid structured output: {last_error}", ErrorCode.LLM_INVALID_OUTPUT)
 
 
 class _InvalidDraft(Exception):
@@ -289,7 +297,7 @@ def _build_prompt(
         "excerpt that authorises it. A clause that says what the law provides, instead of what these "
         "two parties owe each other, is wrong and will be rejected.\n"
         f"Never cite an excerpt that does not apply to these parties — {drafting['off_topic']}.\n"
-        "Use the supplied Terms (price, currency, price_unit, starts_on, ends_on) exactly as given "
+        f"Use the supplied Terms ({drafting['terms']}) exactly as given "
         "wherever a clause needs them.\n"
         "If a clause needs a detail that was not supplied (a date, a term length, a notice period, a "
         f"deposit), write the term with a bracketed blank such as {drafting['blank']} rather than "
@@ -308,10 +316,25 @@ def _build_prompt(
         f"Contract type: {contract_type}\n"
         f"Parties: {json.dumps(parties, ensure_ascii=False)}\n"
         f"Property: {json.dumps(property, ensure_ascii=False)}\n"
-        f"Terms: {json.dumps(terms or {}, ensure_ascii=False)}\n\n"
+        f"Terms: {json.dumps(_prompt_terms(terms, language), ensure_ascii=False)}\n\n"
         f"Law excerpts:\n{excerpts}"
     )
     return system, user
+
+
+def _prompt_terms(terms: dict | None, language: str) -> dict:
+    """The Terms the model sees. A price we can state in Arabic replaces the
+    raw price/currency/price_unit, so "450.000" and "JOD" never reach an
+    Arabic draft — the model copied both verbatim when it had them, and a
+    reviewer read 450.000 as four hundred fifty thousand."""
+    terms = dict(terms or {})
+    price_ar = amount_ar(terms.get("price"), terms.get("currency")) if language == "ar" else None
+    if price_ar:
+        del terms["price"], terms["currency"]
+        terms["price_ar"] = price_ar
+        if terms.get("price_unit") in PERIODS:
+            terms["price_unit_ar"] = PERIODS[terms.pop("price_unit")]
+    return terms
 
 
 def _parse_and_ground(raw: str, context: dict[str, SearchResult]) -> tuple[list[Clause], list[Citation]]:

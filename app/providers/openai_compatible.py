@@ -4,6 +4,7 @@ import math
 from openai import AsyncOpenAI
 
 from app.providers.base import EmbeddingProvider, LLMProvider
+from app.usage import add_tokens
 
 
 class LLMOutputTruncated(Exception):
@@ -40,6 +41,10 @@ class OpenAICompatibleLLMProvider(LLMProvider):
             ],
             **kwargs,
         )
+        # Counted before the truncation check: a cut-off reply still spent its
+        # tokens. `usage` is optional in the OpenAI schema; DeepSeek sends it.
+        if response.usage is not None:
+            add_tokens(response.usage.prompt_tokens, response.usage.completion_tokens)
         # `max_tokens` on a reasoning model budgets reasoning *and* output, so
         # a tight cap burns the whole allowance on reasoning and returns empty
         # or half-written content with finish_reason='length'. Retrying that at

@@ -39,7 +39,8 @@ Callback body, every kind, every outcome:
     "model_version": "deepseek-chat",
     "prompt_version": "analyze_contract-v1",
     "kb_version_id": "..."     // null unless succeeded
-  }
+  },
+  "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0}  // every outcome
 }
 ```
 
@@ -47,6 +48,15 @@ Callback body, every kind, every outcome:
 are how you answer "why did this contract say that" six months from now. The
 knowledge base is versioned and the active version changes on every reindex —
 a result is only reproducible against the version that produced it.
+
+`usage` is on every callback, failures and timeouts included, and maps
+straight onto the `tokens_input`, `tokens_output` and `latency_ms` columns
+`app.ai_jobs` already has. The token counts are summed over every LLM call the
+job made — all three analyze samples and any JSON-repair retries; embeddings
+are not counted — and `latency_ms` is the job's wall time here, excluding
+callback delivery. Zero tokens means no LLM call was made (a bad payload, a
+reindex, or an identical re-run served from cache), not that the field is
+missing.
 
 ## Verifying the callback
 
@@ -179,6 +189,12 @@ Send `terms` (`price` as a major-unit string, `currency`, `price_unit`,
 `[bracketed blank]` in the draft, which the analysis then reports as
 `incomplete`.
 
+An Arabic draft states the rent in digits and words — `450 (أربعمائة وخمسون)
+ديناراً أردنياً شهرياً` — for `currency` JOD, ILS, USD or EUR and `price_unit`
+`per_month`, `per_year`, `per_week`, `per_day` or `per_hour`. Send `price` at
+the currency's precision or coarser (`"450.500"` JOD is fine, `"450.5555"` is
+not); anything outside those reaches the model as sent.
+
 `body` is `clauses[]` joined by blank lines, in a fixed order — it is derived,
 not independently generated, so the two can never disagree. Render whichever
 suits you, but do not expect `body` to contain anything `clauses[]` does not.
@@ -226,6 +242,39 @@ Send `contract_type: "sale"` to `analyze_contract` too: it then retrieves the
 sale, registry and tax laws and judges the contract on its price and its
 commitment to the registry transfer, not as a lease.
 
+## `reindex`
+
+UC-080. Rebuilds this jurisdiction's active knowledge-base version from every
+document already registered in `knowledge.documents`.
+
+Send a job with `"kind": "reindex"` and a payload that may carry an optional
+`tag` (a label for the new version) and `notes`:
+
+```json
+{ "job_id": "...", "kind": "reindex", "jurisdiction_id": "...",
+  "payload": { "tag": "2026-q3-laws" } }
+```
+
+The AI service **cannot create or verify sources** — it only indexes what Laravel
+has already registered. Here's the trap: an empty knowledge base is not an empty
+success. Reindex fails with `error_code: no_documents` rather than activating an
+empty version, because every retrieval after that would silently answer "no
+verified law found" and read as a legal conclusion instead of a wiring bug.
+
+On success `result` is:
+
+```json
+{ "kb_version_id": "...", "documents": 12 }
+```
+
+`documents` is how many documents went into the build, not the chunk count. The
+new version becomes the active one the moment the callback lands, so every job
+that started before it keeps the `kb_version_id` in its own callback's
+`provenance` — compare those before treating two reports as comparable.
+
+Reindex is deliberately not on the 60s budget: an embedding pass over a whole
+corpus is not a user-facing request.
+
 ## Failure modes
 
 | `status` | Meaning | What to do |
@@ -251,7 +300,6 @@ before suspecting the model.
 ## Not built yet
 
 - `answer_query` / `summarize` — Phase 3. Sending them is a `422`.
-- `usage` (token counts, latency) — declared in `openapi.yaml`, never sent.
 - Drafting anything but rent and sale (see `generate_contract`).
 
 ## Local
