@@ -18,6 +18,7 @@ than asked of the model separately, so the two can never drift apart.
 
 import hashlib
 import json
+import re
 import uuid
 from dataclasses import dataclass
 
@@ -70,9 +71,24 @@ DRAFTING_NOTES = {
     "warranties": "The landlord's warranty of title and of quiet enjoyment, and the tenant's remedy if a defect prevents the agreed use.",
     "termination": "State plainly when this contract ends: at the term's expiry, and on the tenant's breach of an obligation this contract itself imposes (rent, upkeep, lawful use) after notice. Two or three sentences, not a list — do not enumerate the statute's repossession grounds one by one, even paraphrased; that is the law's content, not a term of this contract.",
     "dispute_resolution": "The competent court, each party's address for service (الموطن المختار), and notification through الكاتب العدل.",
-    "governing_law": "Name the governing statute explicitly by number and year.",
+    "governing_law": "Name the governing statute exactly as the source of an excerpt you cite names it (the title in parentheses after its label), and cite an excerpt from every statute you name. Never write a law number or year that is not in one of those titles.",
     "other": "Execution formalities only: number of copies, that the preamble forms part of the contract, that the contract is an executory instrument (سند تنفيذي), and signature by both parties and witnesses. No legal doctrine.",
 }
+
+
+# A statute is pinned by its number/year pair — "رقم (62) لسنة 1953", "رقم 62
+# لعام ١٩٥٣", "رقم 62/1953". `\d` matches Arabic-Indic digits and int()
+# normalises them, so the pair compares equal however it was written.
+# Regression: governing_law once named "قانون المالكين والمستأجرين رقم (7) لسنة
+# 1958" — the knowledge base holds 62/1953, not that.
+# ponytail: only number/year pairs are checked; a statute named by title alone
+# slips through. That is not the form the invention took, and a bare title
+# can't be matched to a source without fuzzy matching.
+_STATUTE_REF = re.compile(r"رقم\s*\(?\s*(\d+)\s*\)?\s*(?:/|ل?(?:سنة|عام))\s*(\d{4})")
+
+
+def _statute_refs(text: str) -> set[tuple[int, int]]:
+    return {(int(number), int(year)) for number, year in _STATUTE_REF.findall(text)}
 
 
 class GenerationFailed(Exception):
@@ -199,7 +215,7 @@ async def _retrieve_context(
 def _build_prompt(
     contract_type: str, parties: list[dict], property: dict, language: str, context: dict[str, SearchResult]
 ) -> tuple[str, str]:
-    excerpts = "\n".join(f"[{label}] {r.content}" for label, r in context.items())
+    excerpts = "\n".join(f"[{label}] ({r.source_title}) {r.content}" for label, r in context.items())
     notes = "\n".join(f"- {kind}: {DRAFTING_NOTES[kind]}" for kind in CLAUSE_KINDS)
     system = (
         "You draft contracts the way a Palestinian lawyer drafts them: the plain, operative register "
@@ -259,6 +275,8 @@ def _parse_and_ground(raw: str, context: dict[str, SearchResult]) -> tuple[list[
             raise _InvalidDraft(f"empty content for clause_kind {kind!r}")
         if not cites or not all(label in context for label in cites):
             raise _InvalidDraft(f"clause_kind {kind!r} cites an unknown or missing label")
+        if kind == "governing_law":
+            _check_statutes_are_cited(content, [context[label] for label in cites])
         seen_kinds.add(kind)
         cited_labels.update(cites)
         clauses.append(Clause(clause_kind=kind, content=content.strip()))
@@ -277,3 +295,18 @@ def _parse_and_ground(raw: str, context: dict[str, SearchResult]) -> tuple[list[
         for label in sorted(cited_labels)
     ]
     return clauses, citations
+
+
+def _check_statutes_are_cited(content: str, cited: list[SearchResult]) -> None:
+    """Every statute the clause names by number/year must be the source of an
+    excerpt it cites — the model may choose among the retrieved laws, never
+    supply one."""
+    grounded = set().union(*(_statute_refs(f"{r.source_title} {r.source_citation or ''}") for r in cited))
+    invented = _statute_refs(content) - grounded
+    if invented:
+        named = ", ".join(f"رقم ({number}) لسنة {year}" for number, year in sorted(invented))
+        sources = "; ".join(sorted({r.source_title for r in cited}))
+        raise _InvalidDraft(
+            f"governing_law names {named}, which is not the source of any excerpt it cites ({sources}); "
+            "name the statute exactly as a cited excerpt's source names it"
+        )
