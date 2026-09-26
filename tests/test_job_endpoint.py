@@ -204,12 +204,13 @@ def test_analyze_contract_sends_signed_callback_with_findings_and_score(monkeypa
     assert body["provenance"]["prompt_version"] == JOBS["analyze_contract"].prompt_version
 
 
-def test_analyze_contract_without_content_fails_closed(monkeypatch):
+@pytest.mark.parametrize("payload", [{}, {"content": ""}], ids=["missing", "empty"])
+def test_analyze_contract_without_content_fails_closed(monkeypatch, payload):
     _no_resources(monkeypatch)
 
     response = client.post(
         "/v1/jobs",
-        json={"job_id": str(uuid.uuid4()), "kind": "analyze_contract", "jurisdiction_id": str(uuid.uuid4()), "payload": {}},
+        json={"job_id": str(uuid.uuid4()), "kind": "analyze_contract", "jurisdiction_id": str(uuid.uuid4()), "payload": payload},
     )
     assert response.status_code == 202
 
@@ -217,6 +218,7 @@ def test_analyze_contract_without_content_fails_closed(monkeypatch):
     [call] = used.calls
     body = _verify_signature(call)
     assert body["status"] == "failed"
+    assert body["error_code"] == "invalid_payload"
     assert "content" in body["error"]
 
 

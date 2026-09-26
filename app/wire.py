@@ -18,7 +18,7 @@ import uuid
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class ErrorCode(StrEnum):
@@ -63,7 +63,9 @@ class AnalyzeContractPayload(BaseModel):
     requiring it could only fail a caller for nothing.
     """
 
-    content: str
+    # An empty contract is not a request: without min_length it would run a
+    # full paid analysis on nothing.
+    content: str = Field(min_length=1)
     contract_version_id: uuid.UUID | None = None
     contract_type: str | None = None
     samples: int = 3
