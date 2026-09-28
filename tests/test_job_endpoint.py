@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import math
+import time
 import uuid
 from datetime import date
 from pathlib import Path
@@ -28,9 +29,10 @@ from app.generate_contract import CLAUSE_KINDS, Citation, Clause, GenerateContra
 from app.jobs import JOBS, JobRequest
 from app.knowledge import SearchResult
 from app.providers.openai_compatible import OpenAICompatibleLLMProvider
-from app.security import sign_callback
+from app.security import sign
+from tests.signed_client import SignedClient
 
-client = TestClient(main.app)
+client = SignedClient(main.app)
 
 
 class _CapturingClient:
@@ -87,7 +89,7 @@ def _no_resources(monkeypatch) -> None:
 
 def _verify_signature(call: dict) -> dict:
     ts = int(call["headers"]["X-Wathiq-Signature"].split(",")[0][2:])
-    assert call["headers"]["X-Wathiq-Signature"] == sign_callback(call["content"], settings.ai_webhook_secret, timestamp=ts)
+    assert call["headers"]["X-Wathiq-Signature"] == sign(call["content"], settings.ai_webhook_secret, timestamp=ts)
     return json.loads(call["content"])
 
 
@@ -598,3 +600,48 @@ def test_a_real_lease_request_is_well_inside_the_caps(monkeypatch):
     for name in ("generate_contract.succeeded", "analyze_contract.succeeded"):
         request = json.loads((Path(__file__).resolve().parent.parent / "contract" / f"{name}.json").read_text())["request"]
         assert len(json.dumps(request, ensure_ascii=False).encode()) < main.MAX_JOB_BODY_BYTES // 10
+
+
+# --- Only Laravel may start a job ------------------------------------------------
+
+def _job_bytes() -> bytes:
+    return json.dumps({"job_id": str(uuid.uuid4()), "kind": "generate_contract", "jurisdiction_id": str(uuid.uuid4()),
+                       "payload": {"contract_type": "rent", "parties": [], "property": {}}}).encode()
+
+
+def _raw_post(raw: bytes, signature: str | None):
+    headers = {"Content-Type": "application/json"} | ({"X-Wathiq-Signature": signature} if signature else {})
+    return TestClient(main.app).post("/v1/jobs", content=raw, headers=headers)
+
+
+@pytest.mark.parametrize("make_signature", [
+    lambda raw: None,                                                      # unsigned
+    lambda raw: sign(raw, "a-guessed-secret"),                             # wrong secret
+    lambda raw: sign(raw + b" ", settings.ai_webhook_secret),              # signed other bytes
+    lambda raw: sign(raw, settings.ai_webhook_secret, int(time.time()) - 301),  # stale
+    lambda raw: sign(raw, settings.ai_webhook_secret, int(time.time()) + 301),  # from the future
+    lambda raw: sign(raw, settings.ai_webhook_secret).upper(),             # not the canonical form
+])
+def test_a_job_request_without_laravels_signature_is_refused_and_never_run(monkeypatch, make_signature):
+    """The forgery found 2026-09-28: a contract party read the job id from the
+    API and posted their own terms under it; we signed the result and Laravel
+    stored it. Now the request itself must carry Laravel's signature."""
+    _no_resources(monkeypatch)
+    raw = _job_bytes()
+
+    response = _raw_post(raw, make_signature(raw))
+
+    assert response.status_code == 401
+    assert _CapturingClient.instances == []  # no job ran, nothing was called back
+
+
+def test_a_signed_job_request_is_accepted():
+    raw = _job_bytes()
+    assert _raw_post(raw, sign(raw, settings.ai_webhook_secret)).status_code == 202
+
+
+def test_with_no_secret_configured_every_job_request_is_refused(monkeypatch):
+    """Fail closed: an unset AI_WEBHOOK_SECRET must not mean "anything goes"."""
+    raw = _job_bytes()
+    monkeypatch.setattr(settings, "ai_webhook_secret", "")
+    assert _raw_post(raw, sign(raw, "")).status_code == 401

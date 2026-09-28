@@ -5,7 +5,8 @@ info:
   description: >
     Wire contract between the Laravel back-end and the AI Legal Engine (FastAPI).
     See AI/WATHIQ_AI_SPRINT_PLAN.md's Phase 0 section for the HMAC callback scheme this implements.
-    POST /v1/jobs carries no auth; it is meant to be reached over the private network only.
+    Both directions are signed with the same X-Wathiq-Signature scheme and the
+    shared AI_WEBHOOK_SECRET: Laravel signs POST /v1/jobs, the AI signs its callbacks.
 
 servers:
   - url: http://localhost:8001
@@ -31,7 +32,12 @@ paths:
   /v1/jobs:
     post:
       summary: Enqueue an AI job (Laravel → AI service)
-      security: []
+      description: >
+        Signed by Laravel over the exact bytes it sends (X-Wathiq-Signature,
+        timestamp within 300s either way). Unsigned, mis-signed, altered or
+        stale requests get a 401 and never run.
+      security:
+        - HmacAuth: []
       requestBody:
         required: true
         content:
@@ -45,8 +51,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/JobAccepted"
+        "401":
+          description: Missing, invalid or stale X-Wathiq-Signature
         "422":
-          description: Malformed request, or a kind this service has no worker for
+          description: >-
+            Malformed request, a kind this service has no worker for, or a body
+            over 512 KB (or without a Content-Length)
 
   /api/v1/ai/callback:
     post:
