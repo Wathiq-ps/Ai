@@ -44,14 +44,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  job_id:
-                    type: string
-                    format: uuid
-                  status:
-                    type: string
-                    enum: [running]
+                $ref: "#/components/schemas/JobAccepted"
         "422":
           description: Malformed request, or a kind this service has no worker for
 
@@ -125,10 +118,28 @@ components:
         parties:
           type: array
           description: >-
-            For a sale, each party's `role` is seller or buyer (drafted as
-            الطرف الأول (البائع) and الطرف الثاني (المشتري)).
+            For a rent, `role` is landlord or tenant; for a sale, seller or
+            buyer (drafted as الطرف الأول and الطرف الثاني). Each identity or
+            address field left out becomes a [bracketed blank] the lawyer
+            must fill.
           items:
             type: object
+            required: [role, name]
+            properties:
+              role:
+                type: string
+              name:
+                type: string
+              nationality:
+                type: string
+              document_type:
+                type: string
+                example: national_id
+              document_number:
+                type: string
+              address:
+                type: string
+                description: The party's address for service (الموطن المختار).
         property:
           type: object
           description: >-
@@ -162,6 +173,14 @@ components:
               type: string
               format: date
               description: Rent only.
+            deposit:
+              type: string
+              example: "900"
+              description: Rent only. The security deposit, major units, in the rent's currency.
+            payment_timing:
+              type: string
+              example: in advance on the first of each month
+              description: Rent only. When rent falls due; absent, the draft says in advance.
         language:
           type: string
           enum: [ar, en]
@@ -169,11 +188,23 @@ components:
 
     AnalyzeContractPayload:
       type: object
-      required: [content]
+      description: >-
+        Send the contract as `clauses` (preferred) or `content`; at least one.
+        With `clauses`, each clause is judged as the kind it is, findings come
+        back with the `ordinal` of the clause they concern, and coverage lists
+        the `ordinals` of each kind — no mapping by kind needed.
       properties:
         content:
           type: string
-          description: Full contract text/body to analyze.
+          description: >-
+            The contract body as one text. Derived from `clauses` (joined by
+            blank lines, in ordinal order) when those are sent.
+        clauses:
+          type: array
+          minItems: 1
+          description: The version's clause rows. Ordinals must be unique.
+          items:
+            $ref: "#/components/schemas/AnalyzeClause"
         contract_version_id:
           type: string
           format: uuid
@@ -199,6 +230,21 @@ components:
             3 measured ~36s end to end against the 60s budget; send 1 for a
             faster, noisier report. See BACKEND_INTEGRATION.md's
             Reproducibility section.
+
+    AnalyzeClause:
+      type: object
+      required: [ordinal, content]
+      properties:
+        ordinal:
+          type: integer
+          description: The clause's position in its version (contract_clauses.ordinal).
+        clause_kind:
+          allOf:
+            - $ref: "#/components/schemas/ClauseKind"
+          nullable: true
+          description: Omit only for a clause of no known kind.
+        content:
+          type: string
 
     ReindexPayload:
       type: object
@@ -250,44 +296,49 @@ components:
 
     GenerateContractResult:
       type: object
-      required: [body, clauses, citations]
+      required: [body, clauses]
       properties:
         body:
           type: string
+          description: The clauses' content joined by blank lines, in clause order.
         clauses:
           type: array
           items:
-            type: object
-            required: [clause_kind, content]
-            properties:
-              clause_kind:
-                type: string
-                enum: [parties, subject, price, payment_terms, duration,
-                       obligations, warranties, termination,
-                       dispute_resolution, governing_law, other]
-              content:
-                type: string
+            $ref: "#/components/schemas/DraftClause"
+
+    DraftClause:
+      type: object
+      required: [clause_kind, content, citations]
+      properties:
+        clause_kind:
+          $ref: "#/components/schemas/ClauseKind"
+        content:
+          type: string
         citations:
           type: array
+          description: >-
+            The law this clause rests on (BR-25). Empty only on deposit,
+            utilities, handover, inspection, dispute_resolution and other —
+            the parties' own bargain, which the law may not speak to.
           items:
             $ref: "#/components/schemas/Citation"
 
     AnalyzeContractResult:
       type: object
-      required: [coverage, findings, risk_score, risk_rubric_version, summary_ar, summary_en]
+      required: [coverage, findings, risk_score, risk_rubric_version, summary_ar, summary_en, confidence]
       properties:
         coverage:
           type: array
           description: >
-            The completeness checklist: one entry per clause kind, always all of
-            them, including the clauses that were found fine. This is what makes
+            The completeness checklist: one entry per clause kind of the
+            contract's type, always all of them, including the clauses that were found fine. This is what makes
             a report reproducible -- the model cannot silently decline to mention
             a clause. Every entry whose status is not `present` is ALSO emitted
             as a missing_clause finding, so a consumer that only reads findings[]
             loses nothing; read coverage[] when you need "what was checked and
-            passed", which findings[] cannot express.
-          minItems: 11
-          maxItems: 11
+            passed", which findings[] cannot express. The checklist is the
+            contract type's own list of kinds: 11 for a sale or an untyped
+            contract, 16 for a rent.
           items:
             $ref: "#/components/schemas/ClauseCoverage"
         findings:
@@ -346,13 +397,10 @@ components:
 
     ClauseCoverage:
       type: object
-      required: [clause_kind, status, note, citations]
+      required: [clause_kind, status, note, citations, ordinals]
       properties:
         clause_kind:
-          type: string
-          enum: [parties, subject, price, payment_terms, duration,
-                 obligations, warranties, termination,
-                 dispute_resolution, governing_law, other]
+          $ref: "#/components/schemas/ClauseKind"
         status:
           type: string
           enum: [present, incomplete, absent]
@@ -372,19 +420,24 @@ components:
             law the service did not retrieve (BR-25).
           items:
             $ref: "#/components/schemas/Citation"
+        ordinals:
+          type: array
+          nullable: true
+          items:
+            type: integer
+          description: >-
+            The ordinals of every sent clause of this kind — empty when the
+            kind is absent. null when the contract was sent as `content`.
 
     Finding:
       type: object
-      required: [kind, clause_kind, severity, title_ar, title_en, description, citations]
+      required: [kind, clause_kind, severity, title_ar, title_en, description, suggested_text, citations, confidence, ordinal]
       properties:
         kind:
           type: string
           enum: [missing_clause, legal_conflict, ambiguity, suggestion, risk]
         clause_kind:
-          type: string
-          enum: [parties, subject, price, payment_terms, duration,
-                 obligations, warranties, termination,
-                 dispute_resolution, governing_law, other]
+          $ref: "#/components/schemas/ClauseKind"
           description: >
             Which clause the finding is about, so a review UI can show it next
             to that clause. `other` means the contract as a whole. On a
@@ -403,7 +456,6 @@ components:
           nullable: true
         citations:
           type: array
-          minItems: 1
           description: >
             Always at least one on a judgement finding (BR-25). A
             missing_clause finding inherits its coverage entry's citations,
@@ -414,21 +466,68 @@ components:
           type: number
           minimum: 0
           maximum: 1
+        ordinal:
+          type: integer
+          nullable: true
+          description: >-
+            The clause the finding is about, when the contract was sent as
+            `clauses`. null means the contract as a whole — distinct from a
+            finding on the closing `other` clause, which carries its ordinal —
+            or that the contract was sent as `content`. On a missing_clause
+            finding it is the one clause of that kind, if exactly one exists.
+
+    JobAccepted:
+      type: object
+      required: [job_id, status, respond_within_seconds]
+      properties:
+        job_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [running]
+        respond_within_seconds:
+          type: integer
+          nullable: true
+          example: 107
+          description: >
+            The latest this service will still be trying to deliver the job's
+            callback: the kind's time budget plus every callback attempt and
+            its backoff. Schedule your no-callback check from this number (plus
+            your own slack) instead of a constant copied from here. null for a
+            kind with no budget (reindex).
+
+    ClauseKind:
+      type: string
+      description: >
+        Which condition a clause is. The kinds a contract carries depend on
+        its type: a sale (and an untyped contract) carries the first 11; a
+        rent also carries deposit, utilities, maintenance, handover and
+        inspection. Declared once, in app/generate_contract.py
+        (ALL_CLAUSE_KINDS); tests/test_wire_contract.py fails if this list
+        drifts from it. Laravel's app.clause_kind must accept every value.
+      enum: [parties, subject, price, payment_terms, deposit, duration, obligations,
+             utilities, maintenance, handover, inspection, warranties, termination,
+             dispute_resolution, governing_law, other]
 
     Citation:
       type: object
-      required: [source_id, article_ref]
+      description: >
+        A reference, not a copy. The excerpt's text is knowledge.chunks.content
+        for chunk_id; fetch it when a reader opens the citation.
+      required: [chunk_id, article_ref, law]
       properties:
-        source_id:
+        chunk_id:
           type: string
           format: uuid
         article_ref:
           type: string
-        chunk_id:
+          nullable: true
+          example: المادة (4)
+        law:
           type: string
-          format: uuid
-        excerpt:
-          type: string
+          description: The statute's title, as knowledge.sources names it.
+          example: قانون المالكين والمستأجرين رقم (62) لسنة 1953
 
     Provenance:
       type: object
@@ -469,8 +568,7 @@ components:
             analyze_contract sample and JSON-repair retry, every
             generate_contract attempt. Embedding calls are not counted, so a
             reindex reports 0. Also 0 when no LLM call was made -- an invalid
-            payload, an identical re-run served from cache, or the fake
-            provider. On timed_out, a call cut off mid-flight never reports
+            payload, or the fake provider. On timed_out, a call cut off mid-flight never reports
             its usage, so the figure is a lower bound.
         completion_tokens:
           type: integer

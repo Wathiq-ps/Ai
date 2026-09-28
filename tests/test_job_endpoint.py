@@ -7,6 +7,7 @@ get_embedding_provider) are monkeypatched per test."""
 import asyncio
 import json
 import logging
+import math
 import uuid
 from datetime import date
 from types import SimpleNamespace
@@ -118,8 +119,12 @@ def test_success_path_sends_signed_callback_with_result(monkeypatch):
     async def _fake_generate_contract(*args, **kwargs):
         return GenerateContractResult(
             body="full text",
-            clauses=[Clause(clause_kind="parties", content="x")],
-            citations=[Citation(source_id=source_id, article_ref="Article (1)", chunk_id=chunk_id, excerpt="...")],
+            clauses=[Clause(
+                clause_kind="parties", content="x",
+                citations=[Citation(source_id=source_id, article_ref="Article (1)", chunk_id=chunk_id,
+                                    excerpt="...", law="Law 1")],
+            )],
+            citations=[],
             kb_version_id=kb_version_id,
         )
 
@@ -137,8 +142,12 @@ def test_success_path_sends_signed_callback_with_result(monkeypatch):
     body = _verify_signature(call)
 
     assert body["status"] == "succeeded"
-    assert body["result"]["clauses"] == [{"clause_kind": "parties", "content": "x"}]
-    assert body["result"]["citations"][0]["source_id"] == str(source_id)
+    # A citation is a reference: the excerpt's text stays in knowledge.chunks.
+    assert body["result"]["clauses"] == [{
+        "clause_kind": "parties", "content": "x",
+        "citations": [{"chunk_id": str(chunk_id), "article_ref": "Article (1)", "law": "Law 1"}],
+    }]
+    assert "citations" not in body["result"]
     assert body["error_code"] is None
     assert body["provenance"]["kb_version_id"] == str(kb_version_id)
     assert body["provenance"]["prompt_version"] == JOBS["generate_contract"].prompt_version
@@ -284,7 +293,9 @@ def test_a_sale_is_drafted_end_to_end(monkeypatch):
     body = _verify_signature(used.calls[0])
     assert body["status"] == "succeeded", body["error"]
     assert [c["clause_kind"] for c in body["result"]["clauses"]] == CLAUSE_KINDS
-    assert body["result"]["citations"][0]["article_ref"] == "المادة (2)"
+    assert body["result"]["clauses"][0]["citations"] == [
+        {"chunk_id": str(law.chunk_id), "article_ref": "المادة (2)", "law": law.source_title}
+    ]
     assert "الطرف الأول (البائع)" in systems[0]
 
 
@@ -520,3 +531,15 @@ def test_only_the_60s_budget_kinds_are_bounded(monkeypatch):
     assert JOBS["generate_contract"].timeout() == 42.0
     assert JOBS["analyze_contract"].timeout() == 42.0
     assert JOBS["reindex"].timeout() is None
+
+
+def test_the_202_says_how_long_until_no_callback_is_coming(monkeypatch):
+    """Laravel schedules its no-callback check from this, not from a copied constant."""
+    monkeypatch.setattr(main, "get_pool", lambda: _async_none())
+    response = _post_job(str(uuid.uuid4()), {"contract_type": "rent", "parties": [], "property": {}})
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["status"] == "running"
+    assert body["respond_within_seconds"] == math.ceil(settings.job_timeout_seconds + main.CALLBACK_WINDOW_SECONDS)
+    assert main.respond_within_seconds(JOBS["reindex"]) is None

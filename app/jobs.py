@@ -24,7 +24,8 @@ from typing import Any, Literal
 import asyncpg
 from pydantic import BaseModel
 
-from app.analyze_contract import RISK_RUBRIC_VERSION, analyze_contract
+from app import wire
+from app.analyze_contract import RISK_RUBRIC_VERSION, SentClause, analyze_contract
 from app.config import settings
 from app.generate_contract import (
     DRAFTABLE_CONTRACT_TYPES,
@@ -42,8 +43,8 @@ from app.wire import (
 
 # ponytail: bump manually when a prompt changes materially — no registry,
 # these strings are just what lands in provenance.prompt_version.
-GENERATE_CONTRACT_PROMPT_VERSION = "generate_contract-v5"
-ANALYZE_CONTRACT_PROMPT_VERSION = "analyze_contract-v2"
+GENERATE_CONTRACT_PROMPT_VERSION = "generate_contract-v6"
+ANALYZE_CONTRACT_PROMPT_VERSION = "analyze_contract-v3"
 REINDEX_PROMPT_VERSION = "reindex-v1"  # no prompt; provenance wants a version string
 
 
@@ -58,10 +59,10 @@ class JobContext:
 
 @dataclass(frozen=True)
 class JobOutcome:
-    """A successful run: the result dict that goes in the callback verbatim, and
-    the kb_version that produced it (provenance.kb_version_id)."""
+    """A successful run: the typed result that goes in the callback, and the
+    kb_version that produced it (provenance.kb_version_id)."""
 
-    result: dict
+    result: wire.JobResult
     kb_version_id: uuid.UUID
 
 
@@ -119,11 +120,13 @@ async def _generate_contract(
         language=payload.language,
     )
     return JobOutcome(
-        result={
-            "body": result.body,
-            "clauses": [{"clause_kind": c.clause_kind, "content": c.content} for c in result.clauses],
-            "citations": [citation_json(c) for c in result.citations],
-        },
+        result=wire.GenerateContractResult(
+            body=result.body,
+            clauses=[
+                wire.DraftClause(clause_kind=c.clause_kind, content=c.content, citations=_citations(c.citations))
+                for c in result.clauses
+            ],
+        ),
         kb_version_id=result.kb_version_id,
     )
 
@@ -145,43 +148,36 @@ async def _analyze_contract(
         content=payload.content,
         contract_type=payload.contract_type,
         samples=payload.samples,
+        clauses=[SentClause(c.ordinal, c.clause_kind, c.content) for c in payload.clauses] if payload.clauses else None,
     )
     return JobOutcome(
-        result={
-            # The checklist is emitted alongside findings, not instead of them:
-            # every non-`present` verdict is already mirrored as a
-            # missing_clause finding, so a consumer that only reads findings[]
-            # is unaffected. Read coverage[] when you want the clauses that
-            # were checked and found fine — findings[] cannot tell you that.
-            "coverage": [
-                {
-                    "clause_kind": c.clause_kind,
-                    "status": c.status,
-                    "note": c.note,
-                    "citations": [citation_json(x) for x in c.citations],
-                }
+        # The checklist is emitted alongside findings, not instead of them:
+        # every non-`present` verdict is already mirrored as a missing_clause
+        # finding, so a consumer that only reads findings[] is unaffected. Read
+        # coverage[] when you want the clauses that were checked and found fine.
+        result=wire.AnalyzeContractResult(
+            coverage=[
+                wire.ClauseCoverage(
+                    clause_kind=c.clause_kind, status=c.status, note=c.note,
+                    citations=_citations(c.citations), ordinals=c.ordinals,
+                )
                 for c in result.coverage
             ],
-            "findings": [
-                {
-                    "kind": f.kind,
-                    "clause_kind": f.clause_kind,
-                    "severity": f.severity,
-                    "title_ar": f.title_ar,
-                    "title_en": f.title_en,
-                    "description": f.description,
-                    "suggested_text": f.suggested_text,
-                    "citations": [citation_json(c) for c in f.citations],
-                    "confidence": f.confidence,
-                }
+            findings=[
+                wire.Finding(
+                    kind=f.kind, clause_kind=f.clause_kind, severity=f.severity,
+                    title_ar=f.title_ar, title_en=f.title_en, description=f.description,
+                    suggested_text=f.suggested_text, citations=_citations(f.citations),
+                    confidence=f.confidence, ordinal=f.ordinal,
+                )
                 for f in result.findings
             ],
-            "risk_score": result.risk_score,
-            "risk_rubric_version": RISK_RUBRIC_VERSION,
-            "summary_ar": result.summary_ar,
-            "summary_en": result.summary_en,
-            "confidence": result.confidence,
-        },
+            risk_score=result.risk_score,
+            risk_rubric_version=RISK_RUBRIC_VERSION,
+            summary_ar=result.summary_ar,
+            summary_en=result.summary_en,
+            confidence=result.confidence,
+        ),
         kb_version_id=result.kb_version_id,
     )
 
@@ -200,7 +196,7 @@ async def _reindex(ctx: JobContext, job: JobRequest, payload: ReindexPayload) ->
         notes=payload.notes,
     )
     return JobOutcome(
-        result={"kb_version_id": str(kb_version_id), "documents": documents},
+        result=wire.ReindexResult(kb_version_id=kb_version_id, documents=documents),
         kb_version_id=kb_version_id,
     )
 
@@ -282,13 +278,12 @@ JOBS: dict[str, JobKind] = {
 }
 
 
-def citation_json(c) -> dict:
-    return {
-        "source_id": str(c.source_id),
-        "article_ref": c.article_ref,
-        "chunk_id": str(c.chunk_id),
-        "excerpt": c.excerpt,
-    }
+def _citations(citations) -> list[wire.Citation]:
+    """References, not copies: the excerpt's text is in knowledge.chunks under
+    chunk_id. Carrying it inline was 77% of an analysis (31 of 40 KB, six
+    distinct excerpts repeated sixteen times) and Laravel stored it up to three
+    times — ai_jobs.result, contract_analyses.coverage, analysis_findings."""
+    return [wire.Citation(chunk_id=c.chunk_id, article_ref=c.article_ref, law=c.law) for c in citations]
 
 
 class JobRequest(BaseModel):

@@ -23,4 +23,6 @@ def test_job_round_trips(monkeypatch):
         json={"job_id": job_id, "kind": "generate_contract", "jurisdiction_id": str(uuid.uuid4()), "payload": {}},
     )
     assert response.status_code == 202
-    assert response.json() == {"job_id": job_id, "status": "running"}
+    assert response.json() == {
+        "job_id": job_id, "status": "running", "respond_within_seconds": main.respond_within_seconds(main.JOBS["generate_contract"]),
+    }

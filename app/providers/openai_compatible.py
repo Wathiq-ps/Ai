@@ -104,14 +104,32 @@ class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
     RATE_LIMIT_WAIT_SECONDS = 20
     RATE_LIMIT_RETRIES = 6
 
+    # A text's vector depends only on the model and the requested size, so it is
+    # reused across jobs (providers are built per job, hence module-level).
+    # generate_contract's retrieval queries are fixed per contract type, so after
+    # the first draft its whole retrieval is DB-only. ponytail: FIFO-capped
+    # in-process dict; a reindex's chunk texts push the queries out, which only
+    # costs the next draft one embedding call.
+    CACHE_CAPACITY = 512
+    _cache: dict[tuple[str, int, str], list[float]] = {}
+
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        vectors: list[list[float]] = []
-        for start in range(0, len(texts), self.BATCH_SIZE):
-            response = await self._create_with_retry(texts[start : start + self.BATCH_SIZE])
+        key = lambda text: (self._model, self._request_dimensions, text)  # noqa: E731
+        # Looked up once, up front: a reindex embeds more texts than the cache
+        # holds, so reading back from the cache could miss its own results.
+        found = {t: self._cache[key(t)] for t in texts if key(t) in self._cache}
+        missing = [t for t in dict.fromkeys(texts) if t not in found]
+        for start in range(0, len(missing), self.BATCH_SIZE):
+            batch = missing[start : start + self.BATCH_SIZE]
+            response = await self._create_with_retry(batch)
             # The API may return items out of order; index is authoritative.
             for item in sorted(response.data, key=lambda d: d.index):
-                vectors.append(self._fit(item.embedding))
-        return vectors
+                text = batch[item.index]
+                found[text] = self._fit(item.embedding)
+                if len(self._cache) >= self.CACHE_CAPACITY:
+                    self._cache.pop(next(iter(self._cache)))
+                self._cache[key(text)] = found[text]
+        return [found[t] for t in texts]
 
     async def _create_with_retry(self, batch: list[str]):
         from openai import RateLimitError

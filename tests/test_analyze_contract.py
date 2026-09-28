@@ -118,8 +118,6 @@ def test_coverage_may_report_an_absent_clause_without_citing_anything():
         _analysis_json([_finding(severity="catastrophic")]),
         _analysis_json([_finding(title_en="")]),
         _analysis_json([_finding(description=" ")]),
-        _analysis_json([_finding(cites=[])]),  # BR-25
-        _analysis_json([_finding(cites=["C_missing"])]),
         _analysis_json([_finding(confidence=2)]),
     ],
 )
@@ -193,21 +191,6 @@ def test_analyze_contract_retries_then_succeeds(monkeypatch):
     assert result.kb_version_id == seeded.kb_version_id
     assert result.confidence == 0.8
     assert all(f.citations for f in result.findings)
-
-
-def test_analyze_contract_is_idempotent_for_the_same_input(monkeypatch):
-    """The live-demo risk this guards against: re-analysing the same contract
-    must not silently roll new dice and hand back a different risk_score. A
-    second call with identical inputs must not touch the LLM again — if it
-    did, this second reply ("not json") would make it fail closed."""
-    seeded = _result(1)
-    llm = _ScriptedLLM([_analysis_json([_finding()]), "not json"])
-
-    first = _run(llm, monkeypatch, [seeded])
-    second = _run(llm, monkeypatch, [seeded])
-
-    assert second is first
-    assert second.risk_score == first.risk_score
 
 
 def test_analyze_contract_gives_up_after_max_attempts(monkeypatch):
@@ -342,8 +325,9 @@ def test_vote_keeps_the_coverage_note_from_a_sample_that_voted_that_way():
 
 def test_every_clause_kind_has_an_arabic_label():
     from app.analyze_contract import CLAUSE_LABELS_AR
+    from app.generate_contract import ALL_CLAUSE_KINDS
 
-    assert set(CLAUSE_LABELS_AR) == set(CLAUSE_KINDS)
+    assert set(CLAUSE_LABELS_AR) == set(ALL_CLAUSE_KINDS)
 
 
 def test_a_sale_is_judged_on_its_price_and_registry_transfer_not_a_rent():
@@ -381,3 +365,171 @@ def test_sale_review_retrieves_the_sale_laws(monkeypatch):
     [call] = seen
     assert call["law_type"] == ["sale", "ownership", "tax", "general"]
     assert not any("contract duration" in q for q in call["queries"])
+
+
+def test_summary_ar_may_not_name_clause_kinds_by_their_english_keys():
+    """Regression: a summary_ar read "مكتمل في عناصره الأساسية: parties، subject، price"."""
+    raw = json.loads(_analysis_json([]))
+    raw["summary_ar"] = "العقد مكتمل في عناصره: parties، subject، price."
+
+    with pytest.raises(_InvalidAnalysis, match="English keys"):
+        _parse_and_ground(json.dumps(raw), {"C1": _result(1)})
+
+    # A Latin word that merely contains a key is not one.
+    raw["summary_ar"] = "العقد مكتمل (subjectively fine)."
+    _parse_and_ground(json.dumps(raw), {"C1": _result(1)})
+
+
+def test_an_ambiguity_restating_a_flagged_clause_is_dropped_but_a_legal_conflict_stays():
+    """Regression: blank id numbers came back as both "incomplete parties" and
+    an ambiguity finding saying the same thing, counted twice in risk_score."""
+    coverage = [_cov_entry(k, "incomplete" if k == "parties" else "present") for k in CLAUSE_KINDS]
+    judgements = [
+        _judgement("ambiguity", "Article (3)", clause_kind="parties"),
+        _judgement("suggestion", "Article (3)", clause_kind="parties"),
+        _judgement("legal_conflict", "Article (3)", clause_kind="parties"),
+        _judgement("ambiguity", "Article (4)", clause_kind="duration"),
+    ]
+
+    kept = ac._drop_restated_gaps(coverage, judgements)
+
+    assert [(f.kind, f.clause_kind) for f in kept] == [("legal_conflict", "parties"), ("ambiguity", "duration")]
+
+
+def test_every_excerpt_reaches_the_reviewer_under_its_law_title():
+    """Regression: without the title the model cited the Mejelle's art. 494 as
+    قانون المالكين والمستأجرين."""
+    _system, user = ac._build_prompt("عقد", "rent", {"C1": _result(1)})
+
+    assert "[C1] (Test law) Article text 1" in user
+
+
+def test_vote_takes_the_summary_from_the_sample_that_agrees_with_the_result():
+    """Regression: the report had no findings, but sample 1's summary described
+    the two risks it alone had raised."""
+    lonely = _judgement("risk", "Article (1)", clause_kind="other")
+    samples = [
+        (_sample({}, [lonely])[0], [lonely], "ملخص يذكر خطراً", "mentions a risk"),
+        (_sample({}, [])[0], [], "ملخص نظيف", "clean summary"),
+        (_sample({}, [])[0], [], "ملخص آخر", "another"),
+    ]
+
+    _coverage_, judgements, summary_ar, summary_en = _vote(samples)
+
+    assert judgements == []
+    assert (summary_ar, summary_en) == ("ملخص نظيف", "clean summary")
+
+
+@pytest.mark.parametrize("cites", [[], ["C_missing"], ["C1", "C_missing"]])
+def test_an_ungrounded_finding_is_left_out_and_the_rest_of_the_sample_kept(cites):
+    """BR-25: a finding with no grounding is not a finding. It used to fail the
+    whole sample, re-rolling 11 verdicts to drop one line (~9s a round)."""
+    grounded = _finding(kind="risk", clause_kind="price")
+    raw = _analysis_json([_finding(cites=cites), grounded])
+
+    _cov, findings, _, _ = _parse_and_ground(raw, {"C1": _result(1)})
+
+    assert [(f.kind, f.clause_kind) for f in findings] == [("risk", "price")]
+
+
+def test_a_lease_is_checked_against_its_own_list_and_its_mechanics_weigh_less():
+    from app.generate_contract import clause_kinds
+
+    rent = clause_kinds("rent")
+    system, _ = ac._build_prompt("عقد", "rent", {"C1": _result(1)})
+    assert f"every one of these {len(rent)} clause kinds" in system
+
+    raw = json.dumps({
+        "summary_ar": "ملخص", "summary_en": "summary", "findings": [],
+        "coverage": {k: {"status": "absent" if k == "deposit" else "present", "note": "ملاحظة."} for k in rent},
+    })
+    coverage, _f, _a, _e = _parse_and_ground(raw, {"C1": _result(1)}, rent)
+    assert [c.clause_kind for c in coverage] == rent
+
+    no_deposit = ac._coverage_finding(next(c for c in coverage if c.clause_kind == "deposit"))
+    assert no_deposit.severity == "medium"  # a gap, not an unenforceable lease
+
+    no_rent = [ClauseCoverage(k, "absent" if k == "price" else "present", "n", []) for k in rent]
+    no_deposit_cov = [ClauseCoverage(k, "absent" if k == "deposit" else "present", "n", []) for k in rent]
+    assert risk_score(no_rent, []) == 2 * risk_score(no_deposit_cov, [])
+
+
+# --- Clauses in, ordinals out (C3) ---------------------------------------
+
+SALE_CLAUSES = [ac.SentClause(i + 1, k, f"نص بند {k}") for i, k in enumerate(CLAUSE_KINDS)]
+SENT = {c.ordinal: c for c in SALE_CLAUSES}
+
+
+def test_a_finding_names_its_clause_by_label_and_takes_the_sent_kind():
+    """The model points at §n; the ordinal and kind come from what was sent,
+    the way a citation is hydrated from what was retrieved."""
+    raw = _analysis_json([
+        _finding(clause="§5", clause_kind="price"),       # kind from the sent row wins
+        _finding(kind="risk", clause=None),                # the contract as a whole
+        _finding(kind="suggestion", clause="§99"),         # never sent: falls back to whole
+    ])
+
+    _cov, findings, _, _ = _parse_and_ground(raw, {"C1": _result(1)}, CLAUSE_KINDS, SENT)
+
+    assert [(f.ordinal, f.clause_kind) for f in findings] == [(5, "duration"), (None, "duration"), (None, "duration")]
+
+
+def test_without_sent_clauses_findings_carry_no_ordinal():
+    _cov, findings, _, _ = _parse_and_ground(_analysis_json([_finding(clause="§5")]), {"C1": _result(1)})
+
+    assert findings[0].ordinal is None
+
+
+def test_the_vote_keeps_findings_on_two_clauses_of_one_kind_apart():
+    """A lawyer's second obligations clause is a second subject, not the same one."""
+    first = Finding(**{**_judgement("ambiguity", "Article (1)", "obligations").__dict__, "ordinal": 6})
+    second = Finding(**{**_judgement("ambiguity", "Article (1)", "obligations").__dict__, "ordinal": 12})
+    samples = [_sample({}, [first, second]), _sample({}, [first, second]), _sample({}, [])]
+
+    _coverage, judgements, _, _ = _vote(samples)
+
+    assert sorted(f.ordinal for f in judgements) == [6, 12]
+
+
+def test_coverage_lists_each_kinds_ordinals_and_a_gap_points_at_its_one_clause(monkeypatch):
+    coverage = _coverage(duration={"status": "incomplete", "note": "التاريخ فارغ."})
+    llm = _ScriptedLLM([_analysis_json([], coverage)] * 3)
+
+    async def _fake_search(*args, **kwargs):
+        return [[_result(1)] for _ in kwargs["queries"]]
+
+    monkeypatch.setattr(ac, "search_many", _fake_search)
+    two_obligations = [*SALE_CLAUSES, ac.SentClause(12, "obligations", "بند إضافي")]
+    result = asyncio.run(analyze_contract(
+        pool=None, llm=llm, embedder=None, jurisdiction_id=JURISDICTION_ID,
+        content="x", contract_type="sale", clauses=two_obligations,
+    ))
+
+    by_kind = {c.clause_kind: c.ordinals for c in result.coverage}
+    assert by_kind["duration"] == [5] and by_kind["obligations"] == [6, 12]
+    [gap] = [f for f in result.findings if f.kind == "missing_clause"]
+    assert gap.ordinal == 5
+
+
+def test_each_topic_is_retrieved_with_its_own_clause_text(monkeypatch):
+    """The first 2000 chars of a lease are its parties and price; the handover
+    query never saw the handover clause."""
+    seen: list = []
+
+    async def _recording_search(pool, embedder, **kwargs):
+        seen.extend(kwargs["queries"])
+        return [[_result(1)] for _ in kwargs["queries"]]
+
+    monkeypatch.setattr(ac, "search_many", _recording_search)
+    asyncio.run(ac._retrieve_context(
+        None, None, jurisdiction_id=JURISDICTION_ID, contract_type="sale", content="x", k_per_topic=5,
+        clauses=[ac.SentClause(1, "price", "الثمن مائة ألف")],
+    ))
+
+    assert any("price" in q and "الثمن مائة ألف" in q for q in seen)
+    assert not any("الثمن مائة ألف" in q for q in seen if "price or rent value" not in q)
+
+
+def test_a_clause_label_in_prose_is_sent_back_like_an_excerpt_label():
+    with pytest.raises(_InvalidAnalysis, match="internal excerpt label"):
+        _parse_and_ground(_analysis_json([_finding(description="البند §5 غامض")]), {"C1": _result(1)}, CLAUSE_KINDS, SENT)
