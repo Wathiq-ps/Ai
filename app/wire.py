@@ -35,6 +35,35 @@ class ErrorCode(StrEnum):
     INTERNAL = "internal"
 
 
+# What a legitimate request can hold, with room to spare, and no more. Every
+# value below ends up in an LLM prompt, so an unbounded field is an unbounded
+# bill: a 2 MB party name was accepted before these (seam test, 2026-09-28).
+# Laravel's own columns are far smaller (users.name is varchar(191)); a full
+# 16-clause lease is ~10k characters.
+MAX_FIELD_CHARS = 300  # one party / property / terms value
+MAX_FIELDS = 20  # keys in one party / property / terms object
+MAX_PARTIES = 4
+MAX_CONTRACT_CHARS = 60_000  # the whole contract sent for analysis
+MAX_CLAUSES = 80
+MAX_CLAUSE_CHARS = 10_000
+
+
+def _bounded(value: dict, where: str) -> dict:
+    """A flat object of short values — what a party, a property or the terms
+    are. Nested values are refused rather than measured: none is legitimate,
+    and each would be one more way around the per-value cap."""
+    if len(value) > MAX_FIELDS:
+        raise ValueError(f"{where}: at most {MAX_FIELDS} fields")
+    for key, item in value.items():
+        if len(key) > 64:
+            raise ValueError(f"{where}: field names are at most 64 characters")
+        if isinstance(item, (dict, list)):
+            raise ValueError(f"{where}.{key}: must be a single value")
+        if isinstance(item, str) and len(item) > MAX_FIELD_CHARS:
+            raise ValueError(f"{where}.{key}: at most {MAX_FIELD_CHARS} characters")
+    return value
+
+
 class GenerateContractPayload(BaseModel):
     """openapi.yaml GenerateContractPayload.
 
@@ -48,19 +77,29 @@ class GenerateContractPayload(BaseModel):
     known keys.
     """
 
-    contract_type: str
-    parties: list[dict]
+    contract_type: str = Field(max_length=32)
+    parties: list[dict] = Field(max_length=MAX_PARTIES)
     property: dict
     terms: dict | None = None
     language: Literal["ar", "en"] = "ar"
+
+    @field_validator("parties")
+    @classmethod
+    def _bounded_parties(cls, parties: list[dict]) -> list[dict]:
+        return [_bounded(party, f"parties.{i}") for i, party in enumerate(parties)]
+
+    @field_validator("property", "terms")
+    @classmethod
+    def _bounded_objects(cls, value: dict | None, info) -> dict | None:
+        return None if value is None else _bounded(value, info.field_name)
 
 
 class AnalyzeClause(BaseModel):
     """openapi.yaml AnalyzeClause — one clause row as Laravel stores it."""
 
     ordinal: int
-    clause_kind: str | None = None
-    content: str = Field(min_length=1)
+    clause_kind: str | None = Field(default=None, max_length=64)
+    content: str = Field(min_length=1, max_length=MAX_CLAUSE_CHARS)
 
 
 class AnalyzeContractPayload(BaseModel):
@@ -77,10 +116,10 @@ class AnalyzeContractPayload(BaseModel):
 
     # An empty contract is not a request: without min_length it would run a
     # full paid analysis on nothing.
-    content: str | None = Field(default=None, min_length=1)
-    clauses: list[AnalyzeClause] | None = Field(default=None, min_length=1)
+    content: str | None = Field(default=None, min_length=1, max_length=MAX_CONTRACT_CHARS)
+    clauses: list[AnalyzeClause] | None = Field(default=None, min_length=1, max_length=MAX_CLAUSES)
     contract_version_id: uuid.UUID | None = None
-    contract_type: str | None = None
+    contract_type: str | None = Field(default=None, max_length=32)
     samples: int = 3
 
     @model_validator(mode="after")
@@ -95,6 +134,8 @@ class AnalyzeContractPayload(BaseModel):
         self.clauses = sorted(self.clauses, key=lambda c: c.ordinal)
         # The same "\n\n" join generate_contract uses for `body`.
         self.content = "\n\n".join(c.content for c in self.clauses)
+        if len(self.content) > MAX_CONTRACT_CHARS:
+            raise ValueError(f"the clauses together are over {MAX_CONTRACT_CHARS} characters")
         return self
 
     @field_validator("samples")
@@ -110,8 +151,8 @@ class ReindexPayload(BaseModel):
     rebuilt is every document of the jurisdiction already in
     `knowledge.documents`, and the AI service cannot create or verify sources."""
 
-    tag: str | None = None
-    notes: str | None = None
+    tag: str | None = Field(default=None, max_length=64)
+    notes: str | None = Field(default=None, max_length=2000)
 
 
 class Provenance(BaseModel):

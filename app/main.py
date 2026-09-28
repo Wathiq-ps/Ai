@@ -8,6 +8,7 @@ from typing import Literal
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, Request
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from app.config import settings
@@ -27,6 +28,28 @@ app = FastAPI(title="Wathiq AI Legal Engine")
 
 if not settings.ai_webhook_secret:
     logger.warning("AI_WEBHOOK_SECRET is empty: Laravel will reject every callback this service sends")
+
+
+# The whole POST /v1/jobs body. The field caps in app/wire.py bound what
+# reaches a prompt; this bounds what is read and parsed at all, before either.
+# A full analysis request (clauses and the joined content, both sent) is well
+# under 200 KB. ponytail: judged by Content-Length, which Laravel's client
+# always sends; a body without one is refused rather than streamed and counted.
+MAX_JOB_BODY_BYTES = 512 * 1024
+
+
+@app.middleware("http")
+async def cap_job_body(request: Request, call_next):
+    if request.method == "POST" and request.url.path == "/v1/jobs":
+        length = request.headers.get("content-length")
+        if length is None or not length.isdigit() or int(length) > MAX_JOB_BODY_BYTES:
+            # 422, not 413: Laravel treats 422 as the AI refusing the job (final),
+            # and would retry a 413 five times for the same answer.
+            return JSONResponse(
+                status_code=422,
+                content={"detail": f"a job request is at most {MAX_JOB_BODY_BYTES} bytes, with a Content-Length"},
+            )
+    return await call_next(request)
 
 
 @app.middleware("http")
