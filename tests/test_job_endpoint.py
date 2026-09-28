@@ -10,6 +10,7 @@ import logging
 import math
 import uuid
 from datetime import date
+from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar, get_args
 
@@ -543,3 +544,57 @@ def test_the_202_says_how_long_until_no_callback_is_coming(monkeypatch):
     assert body["status"] == "running"
     assert body["respond_within_seconds"] == math.ceil(settings.job_timeout_seconds + main.CALLBACK_WINDOW_SECONDS)
     assert main.respond_within_seconds(JOBS["reindex"]) is None
+
+
+def test_an_oversized_party_name_fails_before_any_provider_is_called(monkeypatch):
+    """Every payload value ends up in a prompt: a 2 MB name was accepted and
+    would have been billed (seam test, 2026-09-28). It is now a signed
+    invalid_payload failure, reached without a connection or a provider."""
+    _no_resources(monkeypatch)
+
+    job_id = str(uuid.uuid4())
+    payload = {"contract_type": "rent", "property": {"city": "رام الله"},
+               "parties": [{"role": "landlord", "name": "A" * 100_000}]}
+    assert _post_job(job_id, payload).status_code == 202
+
+    body = _verify_signature(_CapturingClient.instances[0].calls[0])
+    assert body["error_code"] == "invalid_payload"
+    assert "parties.0.name" in body["error"]
+
+
+@pytest.mark.parametrize("payload", [
+    {"contract_type": "rent", "property": {"city": "x"}, "parties": [{"role": "tenant"}] * 5},
+    {"contract_type": "rent", "property": {"city": {"nested": "x"}}, "parties": []},
+    {"contract_type": "rent", "property": {f"k{i}": "x" for i in range(21)}, "parties": []},
+    {"contract_type": "rent", "property": {}, "parties": [], "terms": {"price": "1" * 301}},
+])
+def test_a_draft_payload_outside_its_bounds_is_invalid(monkeypatch, payload):
+    _no_resources(monkeypatch)
+    assert _post_job(str(uuid.uuid4()), payload).status_code == 202
+    assert _verify_signature(_CapturingClient.instances[0].calls[0])["error_code"] == "invalid_payload"
+
+
+def test_an_analysis_over_the_contract_cap_is_invalid(monkeypatch):
+    _no_resources(monkeypatch)
+    clauses = [{"ordinal": i, "content": "ب" * 9_000} for i in range(1, 8)]  # 63k joined
+    assert _post_job(str(uuid.uuid4()), {"clauses": clauses}, kind="analyze_contract").status_code == 202
+    assert _verify_signature(_CapturingClient.instances[0].calls[0])["error_code"] == "invalid_payload"
+
+
+def test_a_job_body_over_the_cap_is_refused_before_it_is_read(monkeypatch):
+    """422, which Laravel treats as final: nothing is parsed, queued or called back."""
+    _no_resources(monkeypatch)
+    job = {"job_id": str(uuid.uuid4()), "kind": "generate_contract", "jurisdiction_id": str(uuid.uuid4()),
+           "payload": {"contract_type": "rent", "property": {}, "parties": [{"name": "A" * 600_000}]}}
+
+    response = client.post("/v1/jobs", json=job)
+
+    assert response.status_code == 422
+    assert _CapturingClient.instances == []
+
+
+def test_a_real_lease_request_is_well_inside_the_caps(monkeypatch):
+    """The recorded exchanges are what Laravel actually sends; none may trip a cap."""
+    for name in ("generate_contract.succeeded", "analyze_contract.succeeded"):
+        request = json.loads((Path(__file__).resolve().parent.parent / "contract" / f"{name}.json").read_text())["request"]
+        assert len(json.dumps(request, ensure_ascii=False).encode()) < main.MAX_JOB_BODY_BYTES // 10

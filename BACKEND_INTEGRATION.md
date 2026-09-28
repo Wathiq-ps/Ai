@@ -22,6 +22,13 @@ Only `generate_contract`, `analyze_contract` and `reindex` are accepted; any
 other `kind` is a `422`. Sending the same `job_id` twice (your retry after a
 slow 202) gets a 202 both times and runs the job once.
 
+Requests are size-capped, because every value lands in a paid LLM prompt: the
+body is at most 512 KB (else `422`, never parsed), and inside the payload each
+party/property/terms value is at most 300 characters, at most 4 parties, a
+contract for analysis at most 60,000 characters (80 clauses of up to 10,000
+each). Over a field cap is a signed `invalid_payload` failure, sent before any
+retrieval or LLM call. Nothing Laravel stores today comes near these.
+
 ```
 Laravel ──POST /v1/jobs────────────▶ AI          202 {job_id, status:running}
 Laravel ◀──POST callback (HMAC)────── AI          the actual result
