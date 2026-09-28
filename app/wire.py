@@ -138,11 +138,20 @@ class Usage(BaseModel):
 #
 # What `result` holds on a succeeded callback, per kind. Every field the service
 # always sends is required here (nullable where it can be null), so the spec's
-# `required` lists say exactly what Laravel can rely on. Clause kinds stay `str`:
-# the list lives in app/generate_contract.py and openapi.yaml's ClauseKind, and
-# tests/test_wire_contract.py holds the two together.
+# `required` lists say exactly what Laravel can rely on.
 
 Severity = Literal["low", "medium", "high", "critical"]
+
+# openapi.yaml ClauseKind, and Laravel's app.clause_kind enum. The drafting and
+# analysis code already refuse a kind outside their per-type list; this is the
+# last gate, so not even a bug here can put an unknown kind on the wire.
+# tests/test_wire_contract.py holds it to ALL_CLAUSE_KINDS in
+# app/generate_contract.py (which imports this module, so it cannot import that).
+ClauseKind = Literal[
+    "parties", "subject", "price", "payment_terms", "deposit", "duration", "obligations",
+    "utilities", "maintenance", "handover", "inspection", "warranties", "termination",
+    "dispute_resolution", "governing_law", "other",
+]
 
 
 class Citation(BaseModel):
@@ -156,7 +165,7 @@ class Citation(BaseModel):
 class DraftClause(BaseModel):
     """openapi.yaml DraftClause."""
 
-    clause_kind: str
+    clause_kind: ClauseKind
     content: str
     citations: list[Citation]
 
@@ -171,7 +180,7 @@ class GenerateContractResult(BaseModel):
 class ClauseCoverage(BaseModel):
     """openapi.yaml ClauseCoverage."""
 
-    clause_kind: str
+    clause_kind: ClauseKind
     status: Literal["present", "incomplete", "absent"]
     note: str
     citations: list[Citation]
@@ -182,7 +191,7 @@ class Finding(BaseModel):
     """openapi.yaml Finding."""
 
     kind: Literal["missing_clause", "legal_conflict", "ambiguity", "suggestion", "risk"]
-    clause_kind: str
+    clause_kind: ClauseKind
     severity: Severity
     title_ar: str
     title_en: str

@@ -19,6 +19,8 @@ from app import wire
 from app.jobs import JOBS, JobRequest
 from app.wire import (
     AnalyzeContractPayload,
+    ClauseKind,
+    DraftClause,
     ErrorCode,
     GenerateContractPayload,
     JobAccepted,
@@ -130,6 +132,16 @@ def test_the_clause_kind_enum_is_the_kind_list():
 
     assert SPEC["components"]["schemas"]["ClauseKind"]["enum"] == ALL_CLAUSE_KINDS
     assert all(set(kinds) <= set(ALL_CLAUSE_KINDS) for kinds in CLAUSE_KINDS_BY_TYPE.values())
+    assert list(get_args(ClauseKind)) == ALL_CLAUSE_KINDS
+
+
+def test_a_result_cannot_carry_a_clause_kind_outside_the_enum():
+    """Laravel's column is an enum: an unknown kind must fail here, as a failed
+    job, not as a failed insert on their side."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        DraftClause(clause_kind="late_fees", content="x", citations=[])
 
 
 def test_analyze_takes_clauses_or_content_and_derives_one_from_the_other():
