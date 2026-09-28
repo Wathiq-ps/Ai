@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 import time
 import uuid
 from typing import Literal
@@ -17,7 +18,7 @@ from app.logging_conf import configure_logging, new_trace_id, trace_id_var
 from app.providers import get_embedding_provider, get_llm_provider
 from app.security import sign_callback
 from app.usage import JobUsage, current_usage
-from app.wire import ErrorCode, JobCallback, Provenance, Usage
+from app.wire import ErrorCode, JobAccepted, JobCallback, Provenance, Usage
 
 configure_logging()
 logger = logging.getLogger("wathiq_ai")
@@ -48,6 +49,16 @@ async def health():
 
 CALLBACK_ATTEMPTS = 3
 CALLBACK_BACKOFF_SECONDS = (2, 5)  # between attempts 1->2 and 2->3
+CALLBACK_TIMEOUT_SECONDS = 10.0  # per attempt
+# The longest callback delivery can take, every attempt timing out.
+CALLBACK_WINDOW_SECONDS = CALLBACK_ATTEMPTS * CALLBACK_TIMEOUT_SECONDS + sum(CALLBACK_BACKOFF_SECONDS)
+
+
+def respond_within_seconds(kind: JobKind) -> int | None:
+    """The job's budget plus the callback window: after this, no callback for
+    the job is still coming. None when the kind has no budget."""
+    budget = kind.timeout()
+    return None if budget is None else math.ceil(budget + CALLBACK_WINDOW_SECONDS)
 
 # Job ids already accepted by this process. Laravel retries its POST when it
 # times out waiting for our 202, which can land after we'd already accepted —
@@ -62,8 +73,8 @@ _accepted_jobs: dict[uuid.UUID, None] = {}
 # (ai.railway.internal); anything that can reach the port can enqueue jobs and
 # spend LLM credit. Put an X-API-Key check back (git history: require_api_key
 # in app/security.py) before a public domain or a second caller is relied on.
-@app.post("/v1/jobs", status_code=202)
-async def create_job(job: JobRequest, background_tasks: BackgroundTasks):
+@app.post("/v1/jobs", status_code=202, response_model=JobAccepted)
+async def create_job(job: JobRequest, background_tasks: BackgroundTasks) -> JobAccepted:
     logger.info("received job %s kind=%s", job.job_id, job.kind)
     if job.job_id in _accepted_jobs:
         logger.info("job %s already accepted, not running it again", job.job_id)
@@ -72,7 +83,7 @@ async def create_job(job: JobRequest, background_tasks: BackgroundTasks):
             _accepted_jobs.pop(next(iter(_accepted_jobs)))
         _accepted_jobs[job.job_id] = None
         background_tasks.add_task(_run_job, job, JOBS[job.kind])
-    return {"job_id": str(job.job_id), "status": "running"}
+    return JobAccepted(job_id=job.job_id, status="running", respond_within_seconds=respond_within_seconds(JOBS[job.kind]))
 
 
 async def build_job_context() -> JobContext:
@@ -204,7 +215,7 @@ async def _send_callback(
             "X-Wathiq-Signature": sign_callback(raw_body, settings.ai_webhook_secret),
         }
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=CALLBACK_TIMEOUT_SECONDS) as client:
                 response = await client.post(settings.laravel_callback_url, content=raw_body, headers=headers)
         except httpx.HTTPError as exc:
             logger.warning("callback for job %s: attempt %d failed (%s)", job_id, attempt + 1, exc)

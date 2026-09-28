@@ -15,11 +15,13 @@ from typing import get_args
 import pytest
 import yaml
 
+from app import wire
 from app.jobs import JOBS, JobRequest
 from app.wire import (
     AnalyzeContractPayload,
     ErrorCode,
     GenerateContractPayload,
+    JobAccepted,
     JobCallback,
     Provenance,
     ReindexPayload,
@@ -34,7 +36,15 @@ PAYLOAD_MODELS = {
     "AnalyzeContractPayload": AnalyzeContractPayload,
     "ReindexPayload": ReindexPayload,
 }
-ENVELOPE_MODELS = {"JobCallback": JobCallback, "Provenance": Provenance, "Usage": Usage}
+ENVELOPE_MODELS = {"JobAccepted": JobAccepted, "JobCallback": JobCallback, "Provenance": Provenance, "Usage": Usage}
+# The half of the wire Laravel reads most: each result, and what it is made of.
+RESULT_MODELS = {
+    name: getattr(wire, name)
+    for name in (
+        "GenerateContractResult", "DraftClause", "AnalyzeContractResult", "ClauseCoverage",
+        "Finding", "Citation", "ReindexResult", "AnalyzeClause",
+    )
+}
 
 
 def _required(model) -> list[str]:
@@ -46,7 +56,9 @@ def _refs(node: dict) -> set[str]:
     return {item["$ref"].rsplit("/", 1)[-1] for item in node["oneOf"]}
 
 
-@pytest.mark.parametrize(("name", "model"), list(PAYLOAD_MODELS.items()) + list(ENVELOPE_MODELS.items()))
+@pytest.mark.parametrize(
+    ("name", "model"), list(PAYLOAD_MODELS.items()) + list(ENVELOPE_MODELS.items()) + list(RESULT_MODELS.items())
+)
 def test_schema_declares_exactly_the_models_fields(name, model):
     schema = SCHEMAS[name]
     assert sorted(schema.get("properties", {})) == sorted(model.model_fields), name
@@ -109,3 +121,29 @@ def test_analyze_samples_are_clamped_to_the_spec_range():
     assert AnalyzeContractPayload(content="x", samples=0).samples == 1
     assert AnalyzeContractPayload(content="x", samples=99).samples == 3
     assert AnalyzeContractPayload(content="x").samples == 3
+
+
+def test_the_clause_kind_enum_is_the_kind_list():
+    """Laravel's app.clause_kind mirrors this enum; the drafting code is what
+    it has to match."""
+    from app.generate_contract import ALL_CLAUSE_KINDS, CLAUSE_KINDS_BY_TYPE
+
+    assert SPEC["components"]["schemas"]["ClauseKind"]["enum"] == ALL_CLAUSE_KINDS
+    assert all(set(kinds) <= set(ALL_CLAUSE_KINDS) for kinds in CLAUSE_KINDS_BY_TYPE.values())
+
+
+def test_analyze_takes_clauses_or_content_and_derives_one_from_the_other():
+    from pydantic import ValidationError
+
+    from app.wire import AnalyzeClause
+
+    payload = AnalyzeContractPayload(clauses=[{"ordinal": 2, "clause_kind": "price", "content": "ب"},
+                                              {"ordinal": 1, "clause_kind": "parties", "content": "أ"}])
+    assert [c.ordinal for c in payload.clauses] == [1, 2]
+    assert payload.content == "أ\n\nب"
+    assert AnalyzeContractPayload(content="نص").clauses is None
+
+    for bad in ({}, {"clauses": [{"ordinal": 1, "content": "أ"}, {"ordinal": 1, "content": "ب"}]}):
+        with pytest.raises(ValidationError):
+            AnalyzeContractPayload(**bad)
+    assert sorted(SCHEMAS["AnalyzeClause"]["properties"]) == sorted(AnalyzeClause.model_fields)

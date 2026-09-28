@@ -9,7 +9,11 @@ tell you — what the fields *mean*, and what will bite you.
 
 You `POST /v1/jobs` (no auth header — call it over Railway's private
 network, `http://ai.railway.internal:8001`). You get **202 immediately** — that
-response carries no result, only `{job_id, status: "running"}`. The answer
+response carries no result, only `{job_id, status: "running",
+respond_within_seconds}`. `respond_within_seconds` is the latest we will still
+be trying to call you back (the job's budget plus every delivery attempt; `null`
+for `reindex`): schedule your no-callback check from it plus your own slack,
+rather than from a number copied out of this file. The answer
 arrives later as a signed `POST` to `LARAVEL_CALLBACK_URL`
 (`https://<back-end>/api/v1/ai/callback`). There is no polling endpoint. If
 you never get a callback, the job is lost (see *Failure modes*).
@@ -54,9 +58,8 @@ straight onto the `tokens_input`, `tokens_output` and `latency_ms` columns
 `app.ai_jobs` already has. The token counts are summed over every LLM call the
 job made — all three analyze samples and any JSON-repair retries; embeddings
 are not counted — and `latency_ms` is the job's wall time here, excluding
-callback delivery. Zero tokens means no LLM call was made (a bad payload, a
-reindex, or an identical re-run served from cache), not that the field is
-missing.
+callback delivery. Zero tokens means no LLM call was made (a bad payload or a
+reindex), not that the field is missing.
 
 ## Verifying the callback
 
@@ -72,8 +75,24 @@ delivery cannot apply twice.
 
 The result has **two views of the same analysis**, deliberately.
 
-`coverage[]` is a checklist: **always exactly 11 entries**, one per clause
-kind, including clauses that are fine.
+`coverage[]` is a checklist: **one entry per clause kind of the contract's
+type — 16 for a rent, 11 for a sale** — including clauses that are fine.
+
+**Send the version as `clauses`**, not only `content`:
+
+```json
+{"contract_type": "rent",
+ "clauses": [{"ordinal": 1, "clause_kind": "parties", "content": "..."},
+             {"ordinal": 5, "clause_kind": "deposit", "content": "..."}]}
+```
+
+Each clause is then judged as the kind it is (and its law retrieved on its own
+text), every finding comes back with the `ordinal` of the clause it concerns
+(`null` = the contract as a whole, which is not the same as the closing
+`other` clause), and each coverage entry lists the `ordinals` of that kind.
+Attach findings with `clause_id = row at ordinal` — no lookup by kind, so a
+version with two clauses of one kind maps right. `content` alone still works
+and returns `ordinal: null` / `ordinals: null` everywhere.
 
 ```json
 {"clause_kind": "duration", "status": "incomplete",
@@ -96,6 +115,13 @@ know. Don't render both as one list; you will show every defect twice.
 Severity on a `missing_clause` finding is assigned by *this service* from the
 coverage status (`absent` → high, `incomplete` → medium), not judged by the
 model. Severity on the other kinds is the model's.
+
+**A citation is a reference, not a copy:** `{"chunk_id", "article_ref",
+"law"}` — e.g. `{"chunk_id": "…", "article_ref": "المادة (4)", "law": "قانون
+المالكين والمستأجرين رقم (62) لسنة 1953"}`. The article's text is
+`knowledge.chunks.content` for that `chunk_id`; fetch it when a reader opens
+the citation. (It used to ride inline as `excerpt`, which was three quarters
+of every analysis and got stored three times.)
 
 `citations` on a `coverage` entry **can be empty, on any status.** A missing
 clause is measured against this service's 11-clause checklist, not against a
@@ -164,15 +190,9 @@ Practical consequences for you:
 - A risk score is comparable only against the same `risk_rubric_version`
   **and** the same `kb_version_id`.
 
-Until you have somewhere of your own to store a result (Sprint 7), the AI
-service covers the gap: submitting the exact same `(jurisdiction_id,
-contract_type, content, samples)` again returns the exact same report from an
-in-process cache, no new sampling involved — see `_analysis_cache` in
-`app/analyze_contract.py`. This makes "run it again live" safe for a demo, but
-it is **not** a substitute for real storage: it's per-process (an AI-service
-restart clears it) and per-worker if this ever runs more than one. Build your
-own store per the bullet above once Sprint 7 starts; don't depend on this
-staying around.
+Every job is a fresh run: the AI service keeps no copy of a past result, so
+submitting the same contract again samples again. Serving a stored report
+instead of re-running is yours to decide — you hold the state.
 
 `analyze_contract`'s job payload accepts an optional `"samples"` integer (1-3,
 default 3) that sets how many independent analyses are voted on. Send 1 when
@@ -199,10 +219,9 @@ not); anything outside those reaches the model as sent.
 not independently generated, so the two can never disagree. Render whichever
 suits you, but do not expect `body` to contain anything `clauses[]` does not.
 
-`citations[]` is **document-level, not per-clause.** The model cites by
-internal label and we hydrate the real ids from our own retrieval, but the
-label→clause mapping is not currently preserved. If the review UI needs "which
-article backs this clause", that is a change on our side — ask.
+Each clause carries its own `citations[]` — the law that clause rests on — so
+a review UI can show "which article backs this clause". There is no
+document-level `citations[]` any more.
 
 Drafts contain `[bracketed blanks]` such as `[تاريخ بدء الإجارة]` wherever an
 input was not supplied. These are deliberate, not failures — surface them as
@@ -281,7 +300,12 @@ corpus is not a user-facing request.
 |---|---|---|
 | `failed` | Fail-closed. `error_code` says why: `invalid_payload`, `unsupported_contract_type`, `no_verified_sources`, `llm_invalid_output`, `internal` (`no_documents` for reindex) | Return the contract to `draft`. `error` is safe to log, not to show a user |
 | `timed_out` | Exceeded the 70s job budget (NFR-1.1's 60s plus margin); `error_code` is `timeout` | Same as failed. Retrying may succeed — it is a latency limit, not a verdict |
-| *no callback* | The AI service died mid-job, or delivery failed 3 times | We retry delivery up to 3 times (network error or 5xx), re-signed each time; a 4xx from you is final. You still need your own timeout to move a stuck job out of `running` |
+| *no callback* | The AI service died mid-job, or delivery failed 3 times | We retry delivery up to 3 times (network error or 5xx), re-signed each time; a 4xx from you is final. You still need your own timeout to move a stuck job out of `running` — schedule it from the 202's `respond_within_seconds` |
+
+**Answer a callback you can't store with 422 and a reason**, not a 500. A 500
+makes us retry the same body twice more and your job ends as "no callback",
+hiding the real cause; a 422 is final on our side and the reason can go on the
+job row (e.g. `error_code = contract_violation`).
 
 A `timed_out` is not always the model's fault: the embedding provider is on a
 free tier that answers 429 past 20 requests/minute, and our client waits it

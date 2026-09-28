@@ -43,6 +43,11 @@ def add_tokens(prompt_tokens: int, completion_tokens: int) -> None:
         usage.completion_tokens += completion_tokens
 
 
+def job_tag() -> str:
+    usage = current_usage.get()
+    return usage.job_id if usage else "-"
+
+
 @contextmanager
 def stage(name: str, **tags) -> Iterator[None]:
     """Logs `job <id> stage=<name> [k=v ...] ms=<n>` when the block exits,
@@ -52,7 +57,6 @@ def stage(name: str, **tags) -> Iterator[None]:
     try:
         yield
     finally:
-        usage = current_usage.get()
         extra = "".join(f" {k}={v}" for k, v in tags.items())
         ms = int((time.perf_counter() - start) * 1000)
-        logger.info("job %s stage=%s%s ms=%d", usage.job_id if usage else "-", name, extra, ms)
+        logger.info("job %s stage=%s%s ms=%d", job_tag(), name, extra, ms)

@@ -9,8 +9,9 @@ class Settings(BaseSettings):
     # NFR-1.1 asks for a contract generated/analysed within 60s. The budget
     # sits 10s above it: a 3-sample analyze of the demo lease measured 29-31s
     # on most runs but 61.0s on one (2026-09-26), and a timeout at exactly 60s
-    # turns that slow run into a failed job the lawyer must resubmit. Laravel's
-    # own no-callback check is 3 minutes, so it still fires well after this.
+    # turns that slow run into a failed job the lawyer must resubmit. The 202
+    # tells Laravel this budget plus the callback window (respond_within_seconds),
+    # so its no-callback check follows any change made here.
     # Reindex is deliberately not bounded by this — a rebuild is minutes.
     job_timeout_seconds: float = 70.0
     ai_webhook_secret: str = ""

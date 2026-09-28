@@ -86,6 +86,33 @@ def test_embedding_provider_batches_truncates_and_keeps_input_order():
     assert math.isclose(math.sqrt(sum(x * x for x in vectors[0])), 1.0, rel_tol=1e-6)
 
 
+def test_embedding_provider_reuses_vectors_across_jobs_and_survives_a_big_batch():
+    """Providers are built per job, so the cache must outlive one instance; and a
+    reindex embeds more texts than the cache holds, which must not lose any."""
+    from app.providers.openai_compatible import OpenAICompatibleEmbeddingProvider
+
+    calls: list[list[str]] = []
+
+    class _StubEmbeddings:
+        async def create(self, *, model, input, dimensions, encoding_format):
+            calls.append(list(input))
+            return SimpleNamespace(data=[
+                SimpleNamespace(index=i, embedding=[float(len(text))] * dimensions) for i, text in enumerate(input)
+            ])
+
+    def provider():
+        return OpenAICompatibleEmbeddingProvider(SimpleNamespace(embeddings=_StubEmbeddings()), "cache-test", 4)
+
+    first = asyncio.run(provider().embed(["rent contract: price", "rent contract: duration"]))
+    again = asyncio.run(provider().embed(["rent contract: duration", "rent contract: price"]))
+    assert calls == [["rent contract: price", "rent contract: duration"]]
+    assert again == first[::-1]
+
+    big = [f"chunk {i}" for i in range(OpenAICompatibleEmbeddingProvider.CACHE_CAPACITY + 50)]
+    vectors = asyncio.run(provider().embed(big))
+    assert vectors == [[float(len(t))] * 4 for t in big]
+
+
 def test_llm_provider_raises_instead_of_returning_a_truncated_reply():
     """`max_tokens` on a reasoning model budgets reasoning *and* output, so a
     tight cap can return empty or half-written content with
