@@ -19,15 +19,15 @@ from datetime import date
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 import app.analyze_contract as ac
 import app.generate_contract as gc
 from app import main
 from app.config import settings
 from app.knowledge import SearchResult
-from app.security import sign_callback
+from app.security import sign
 from app.usage import add_tokens
+from tests.signed_client import SignedClient
 
 CONTRACT_DIR = Path(__file__).resolve().parent.parent / "contract"
 UPDATE = os.environ.get("UPDATE_GOLDENS") == "1"
@@ -146,7 +146,7 @@ def wire(monkeypatch):
     def run(job_id: str, kind: str, payload: dict, reply: dict) -> dict:
         monkeypatch.setattr(main, "get_llm_provider", lambda: _ScriptedLLM(reply))
         request = {"job_id": job_id, "kind": kind, "jurisdiction_id": JURISDICTION_ID, "payload": payload}
-        response = TestClient(main.app).post("/v1/jobs", json=request)
+        response = SignedClient(main.app).post("/v1/jobs", json=request)
         assert response.status_code == 202
         [callback] = _Recorder.bodies
         callback["usage"]["latency_ms"] = 0
@@ -202,4 +202,4 @@ def test_the_signature_vector_both_sides_check():
     the signer here must keep producing it."""
     vector = json.loads((CONTRACT_DIR / "hmac.json").read_text())
 
-    assert sign_callback(vector["body"].encode(), vector["secret"], vector["timestamp"]) == vector["header"]
+    assert sign(vector["body"].encode(), vector["secret"], vector["timestamp"]) == vector["header"]

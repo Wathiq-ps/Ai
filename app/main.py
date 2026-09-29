@@ -17,7 +17,7 @@ from app.errors import JobFailed
 from app.jobs import JOBS, JobContext, JobKind, JobOutcome, JobRequest
 from app.logging_conf import configure_logging, new_trace_id, trace_id_var
 from app.providers import get_embedding_provider, get_llm_provider
-from app.security import sign_callback
+from app.security import sign, verify
 from app.usage import JobUsage, current_usage
 from app.wire import ErrorCode, JobAccepted, JobCallback, Provenance, Usage
 
@@ -27,7 +27,7 @@ logger = logging.getLogger("wathiq_ai")
 app = FastAPI(title="Wathiq AI Legal Engine")
 
 if not settings.ai_webhook_secret:
-    logger.warning("AI_WEBHOOK_SECRET is empty: Laravel will reject every callback this service sends")
+    logger.warning("AI_WEBHOOK_SECRET is empty: every job request is refused and Laravel rejects every callback")
 
 
 # The whole POST /v1/jobs body. The field caps in app/wire.py bound what
@@ -39,7 +39,12 @@ MAX_JOB_BODY_BYTES = 512 * 1024
 
 
 @app.middleware("http")
-async def cap_job_body(request: Request, call_next):
+async def guard_job_requests(request: Request, call_next):
+    """Only Laravel may start a job. A job request is signed like our callbacks
+    (app/security.py) with the shared AI_WEBHOOK_SECRET; without that, anyone
+    who reached this port — the public domain included — could post their own
+    terms under a real job id and get the result signed by us (seam security
+    test, 2026-09-28: a tenant's "1 JOD a year" draft was stored as genuine)."""
     if request.method == "POST" and request.url.path == "/v1/jobs":
         length = request.headers.get("content-length")
         if length is None or not length.isdigit() or int(length) > MAX_JOB_BODY_BYTES:
@@ -49,6 +54,10 @@ async def cap_job_body(request: Request, call_next):
                 status_code=422,
                 content={"detail": f"a job request is at most {MAX_JOB_BODY_BYTES} bytes, with a Content-Length"},
             )
+        # Read here, within the cap above; FastAPI reuses the same bytes to parse it.
+        if not verify(request.headers.get("x-wathiq-signature"), await request.body(), settings.ai_webhook_secret):
+            logger.warning("refused an unsigned or mis-signed job request from %s", request.client.host if request.client else "?")
+            return JSONResponse(status_code=401, content={"detail": "missing, invalid or stale X-Wathiq-Signature"})
     return await call_next(request)
 
 
@@ -92,10 +101,6 @@ _ACCEPTED_CAPACITY = 1024
 _accepted_jobs: dict[uuid.UUID, None] = {}
 
 
-# ponytail: no inbound auth. Laravel calls this over Railway's private network
-# (ai.railway.internal); anything that can reach the port can enqueue jobs and
-# spend LLM credit. Put an X-API-Key check back (git history: require_api_key
-# in app/security.py) before a public domain or a second caller is relied on.
 @app.post("/v1/jobs", status_code=202, response_model=JobAccepted)
 async def create_job(job: JobRequest, background_tasks: BackgroundTasks) -> JobAccepted:
     logger.info("received job %s kind=%s", job.job_id, job.kind)
@@ -235,7 +240,7 @@ async def _send_callback(
         # minutes old, and its replay index would refuse a reused one.
         headers = {
             "Content-Type": "application/json",
-            "X-Wathiq-Signature": sign_callback(raw_body, settings.ai_webhook_secret),
+            "X-Wathiq-Signature": sign(raw_body, settings.ai_webhook_secret),
         }
         try:
             async with httpx.AsyncClient(timeout=CALLBACK_TIMEOUT_SECONDS) as client:

@@ -7,8 +7,8 @@ tell you — what the fields *mean*, and what will bite you.
 
 ## The shape of an exchange
 
-You `POST /v1/jobs` (no auth header — call it over Railway's private
-network, `http://ai.railway.internal:8001`). You get **202 immediately** — that
+You `POST /v1/jobs`, signed (see below), over Railway's private network:
+`http://ai.railway.internal:8001`. You get **202 immediately** — that
 response carries no result, only `{job_id, status: "running",
 respond_within_seconds}`. `respond_within_seconds` is the latest we will still
 be trying to call you back (the job's budget plus every delivery attempt; `null`
@@ -21,6 +21,12 @@ you never get a callback, the job is lost (see *Failure modes*).
 Only `generate_contract`, `analyze_contract` and `reindex` are accepted; any
 other `kind` is a `422`. Sending the same `job_id` twice (your retry after a
 slow 202) gets a 202 both times and runs the job once.
+
+**Sign every job request**, exactly like the callbacks we send you: header
+`X-Wathiq-Signature: t=<unix>,v1=<hex HMAC-SHA256(AI_WEBHOOK_SECRET, "<t>.<raw body>")>`,
+computed over the exact bytes you send (encode the JSON once, sign that string,
+send that string). An unsigned, mis-signed, altered or >300s-off request gets a
+`401` and never runs. `contract/hmac.json` is a test vector for the scheme.
 
 Requests are size-capped, because every value lands in a paid LLM prompt: the
 body is at most 512 KB (else `422`, never parsed), and inside the payload each
